@@ -184,3 +184,11 @@ becomes `store.example.svc`.
 - End to end: back up the Redis under the writer's load, restore it
   into a new `Redis`, and check that the restored counter is at least
   the highest value confirmed before the backup started.
+- End to end, with a volume store: the same backup and restore against
+  a ReadWriteMany claim, which checks that the file exists on the
+  volume and that deleting the `Backup` removes it. A `ScheduledBackup`
+  every minute under a retention of 90 seconds then checks that
+  retention deletes a scheduled `Backup` and its file. The k3s nodes
+  have no NFS mount helper, so the claim binds a PersistentVolume on a
+  host directory that every node bind-mounts; the `nfs` source has unit
+  tests only.

@@ -4,18 +4,27 @@
 # drained. The operator's image is built from this checkout and loaded
 # into each node's containerd, and the server images are loaded the
 # same way, so no node pulls anything during a scenario.
+#
+# Every node also bind-mounts one host directory at BACKUP_VOLUME_PATH.
+# That stands in for a ReadWriteMany volume: the k3s image has no NFS
+# mount helper, and k3s has no ReadWriteMany storage class, but a
+# PersistentVolume on this path shows every node the same files.
 
 K3S_IMAGE=rancher/k3s:v1.37.0-k3s1
 AGENTS=3
+BACKUP_VOLUME_PATH=/e2e-backups
 
 start_cluster() {
   log "starting k3s: $SERVER and $AGENTS agents"
+  mkdir -p "$WORKDIR/backups"
+  # The instance managers run as another user than this script.
+  chmod 777 "$WORKDIR/backups"
   docker run -d --name "$SERVER" --hostname "$SERVER" --network "$NETWORK" --privileged \
-    -p 127.0.0.1::6443 -e K3S_TOKEN="$RUN_ID" \
+    -v "$WORKDIR/backups:$BACKUP_VOLUME_PATH" -p 127.0.0.1::6443 -e K3S_TOKEN="$RUN_ID" \
     "$K3S_IMAGE" server --disable=traefik,metrics-server --tls-san 127.0.0.1 >/dev/null
   for i in $(seq 1 "$AGENTS"); do
     docker run -d --name "$SERVER-agent-$i" --hostname "$SERVER-agent-$i" --network "$NETWORK" --privileged \
-      -e K3S_TOKEN="$RUN_ID" -e K3S_URL="https://$SERVER:6443" \
+      -v "$WORKDIR/backups:$BACKUP_VOLUME_PATH" -e K3S_TOKEN="$RUN_ID" -e K3S_URL="https://$SERVER:6443" \
       "$K3S_IMAGE" agent >/dev/null
   done
   retry "k3s's kubeconfig appearing" 90 docker exec "$SERVER" test -s /etc/rancher/k3s/k3s.yaml
@@ -36,16 +45,17 @@ node_containers() {
   for i in $(seq 1 "$AGENTS"); do echo "$SERVER-agent-$i"; done
 }
 
-# load_images builds the operator image and imports it, and the server
-# image of this run's engine, into every node.
+# load_images builds the operator image and imports it, the server
+# image of this run's engine, and the exporter's image into every node.
 load_images() {
   log "building the operator image ($OPERATOR_IMAGE)"
   docker build -q -t "$OPERATOR_IMAGE" --build-arg VERSION=e2e "$REPO_ROOT" >/dev/null
   docker pull -q "$SERVER_IMAGE" >/dev/null
   docker pull -q "$SEAWEEDFS_IMAGE" >/dev/null
-  log "loading $OPERATOR_IMAGE, $SERVER_IMAGE, and $SEAWEEDFS_IMAGE into every node"
+  docker pull -q "$EXPORTER_IMAGE" >/dev/null
+  log "loading $OPERATOR_IMAGE, $SERVER_IMAGE, $SEAWEEDFS_IMAGE, and $EXPORTER_IMAGE into every node"
   for node in $(node_containers); do
-    docker save "$OPERATOR_IMAGE" "$SERVER_IMAGE" "$SEAWEEDFS_IMAGE" | docker exec -i "$node" ctr images import - >/dev/null
+    docker save "$OPERATOR_IMAGE" "$SERVER_IMAGE" "$SEAWEEDFS_IMAGE" "$EXPORTER_IMAGE" | docker exec -i "$node" ctr images import - >/dev/null
   done
 }
 
