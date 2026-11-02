@@ -23,8 +23,12 @@ The API group is `redis.guid.foo`, version `v1alpha1`.
   fails with `CROSSSLOT`. No router hides that from clients, so a
   `Redis` cannot become a `RedisCluster` in place, and each topology
   fails over through different code.
-- Both kinds take `engine: redis | valkey`. Redis 8 and Valkey speak the
-  same protocol, and the operator uses only commands that both have.
+- `Backup` is one snapshot of a `Redis`, and `ScheduledBackup` makes
+  `Backup`s on a cron schedule ([02-backups.md](02-backups.md)). Both
+  name their `Redis` in `spec.redis`.
+- Both data kinds take `engine: redis | valkey`. Redis 8 and Valkey
+  speak the same protocol, and the operator uses only commands that both
+  have.
 
 Two kinds risk the drift that the four kinds of
 [OT-CONTAINER-KIT/redis-operator](https://github.com/OT-CONTAINER-KIT/redis-operator)
@@ -32,8 +36,9 @@ show, where a feature reaches one kind and not another (issues #1462,
 #1542). The defenses: both kinds embed the same Go structs for the
 engine, storage, auth, TLS, and memory; a test checks that both CRDs
 expose them; children of each kind get names that cannot collide, the
-problem valkey-operator met in issue #531; and a `Backup` names its
-source as `{kind, name}`.
+problem valkey-operator met in issue #531; and a `Backup` will name its
+source as `{kind, name}` once a second kind exists. Today it names a
+`Redis` by `spec.redis`, because only one kind exists.
 
 The decision to revisit: if sharded mode also runs under the operator's
 authority (`cluster-replica-no-failover yes` plus
@@ -100,9 +105,12 @@ The design instead:
    stalled (`checkGoodReplicasStatus` in `src/replication.c`).
 5. **No instance starts as primary unless it holds the Lease.** An
    instance that starts without it starts as a replica of the Lease
-   holder, or detached when there is none. An instance without
-   persistent storage that restarts while it holds the Lease releases it
-   instead of serving an empty dataset as primary.
+   holder, or detached when there is none. An instance that restarts
+   with no data on disk, because it has no persistent storage or lost
+   its volume, releases the Lease it holds instead of serving an empty
+   dataset as primary. When every instance restarts with no data, the
+   operator starts an empty dataset on instance 0 and sets the
+   condition `DataLost`.
 6. **A planned switchover uses Redis's own `FAILOVER`.** The operator
    moves `targetPrimary` to a replica. The primary's instance manager
    runs `FAILOVER TO <ip> <port> TIMEOUT <ms>`, which pauses writes,
@@ -115,7 +123,9 @@ The design instead:
    primary's node is cordoned it switches over to a replica on a node
    that is not. The old primary is then a replica, and the eviction
    proceeds. A primary pod deleted directly asks for the same
-   switchover from its `preStop` path before it stops.
+   switchover: its instance manager gets SIGTERM, annotates its pod with
+   `redis.guid.foo/switchover-requested`, and keeps serving until the
+   operator has moved the Lease or 20 seconds have passed.
 8. **Clients connect through a Service.** `<name>-rw` selects the pod
    that holds the Lease, by a role label the operator writes, and
    `<name>-ro` selects the replicas. Any Redis client works. A client
@@ -164,7 +174,11 @@ The instance manager:
 - carries out the role that `targetPrimary` and the Lease give it, as
   described above;
 - serves its state on port 9123: `/status` for the operator, `/ready`
-  for the readiness probe, `/healthz` for the liveness probe.
+  for the readiness probe, `/healthz` for the liveness probe;
+- takes the snapshot of a running `Backup` that names it, restores a new
+  `Redis` from a snapshot before its server starts, and makes the Lease
+  holder follow the source in replica mode
+  ([02-backups.md](02-backups.md), [03-adoption.md](03-adoption.md)).
 
 It talks to Redis over RESP with a small client in this repository, and
 to the API server with the same hand-written client as the operator.
@@ -174,8 +188,12 @@ to the API server with the same hand-written client as the operator.
 The operator runs two replicas that elect a leader through a Lease, as
 healthchecks-operator does. It talks to the API server over HTTP with
 no client-go and no controller framework. It reconciles from watches of
-`Redis`, Pods, Leases, and Nodes, plus a timer that polls each instance
-manager's `/status`.
+`Redis`, Pods, Leases, StatefulSets, Nodes, `Backup`s, and
+`ScheduledBackup`s, plus a timer every 2 seconds that polls each
+instance manager's `/status`. It serves Prometheus metrics, prefixed
+`redis_operator_`, on port 9200, or on `METRICS_PORT`. `CANARY_SOAK` and
+`CANARY_TIMEOUT` override the rollout timings of
+[04-upgrades.md](04-upgrades.md).
 
 For each `Redis` it applies a StatefulSet with `podManagementPolicy:
 Parallel` and `updateStrategy: OnDelete`. The StatefulSet gives stable
@@ -184,8 +202,8 @@ when, so a change rolls the replicas first, then switches over, then
 rolls the old primary.
 
 Conditions follow the Kubernetes rule that liken's `conditions.Set`
-keeps: `lastTransitionTime` moves only when the status changes, and each
-transition posts an Event for a person to read.
+keeps: `lastTransitionTime` moves only when the status changes. The
+operator logs each decision. It posts no Events yet.
 
 ## Testing
 
@@ -194,16 +212,22 @@ real `redis-server` and `valkey-server` processes for the RESP client
 and the instance manager, a fake Kubernetes API server for the operator,
 and `httptest` servers that serve an instance manager's `/status`.
 
-The end-to-end suite runs on a multi-node kind cluster in CI, against
-both engines. Its chaos tests kill the primary, kill the operator,
-drain the primary's node, and freeze the primary's processes for longer
-than the lease duration, while a writer confirms each write with
-`WAIT 1`. Each test checks that no confirmed write is lost and that two
-instances never accepted writes at once.
+The end-to-end suite (`make e2e`) runs a k3s cluster of four nodes in
+Docker, in CI, against each engine. Its chaos tests kill the primary,
+stop the operator and kill the primary, drain the primary's node, freeze
+the primary's processes for longer than the lease duration, and
+partition the primary from the API server and its peers, while a writer
+confirms each write with `WAIT 1`. Each test checks that the counter is
+at least the highest confirmed value and that the writer confirms new
+writes again. No test yet checks that two instances never accepted
+writes at once.
 
 ## Milestones
 
 1. [High availability](01-high-availability.md).
-2. Backups to object storage, and restore into a new `Redis`.
-3. Adoption: replicate from an existing Redis or Valkey, then promote.
-4. Upgrades and downgrades, staged so they lose no data.
+2. [Backups](02-backups.md) to object storage or a volume, and restore
+   into a new `Redis`.
+3. [Adoption](03-adoption.md): replicate from an existing Redis or
+   Valkey, then promote.
+4. [Upgrades and downgrades](04-upgrades.md), staged so they lose no
+   data.

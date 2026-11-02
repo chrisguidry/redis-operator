@@ -51,8 +51,22 @@ func secretName(redis string) string { return redis + "-app" }
 // children lists every object for r except its Secret, which the
 // operator creates once and never rewrites, because it holds the
 // password.
-func children(r *Redis, operatorImage string) []child {
+func children(r *Redis, operatorImage string, secrets []string, restore *BackupVolume) []child {
 	name := r.Metadata.Name
+	rules := []map[string]any{
+		{"apiGroups": []string{apiGroup}, "resources": []string{"redis"}, "resourceNames": []string{name}, "verbs": []string{"get"}},
+		{"apiGroups": []string{"coordination.k8s.io"}, "resources": []string{"leases"}, "verbs": []string{"create"}},
+		{"apiGroups": []string{"coordination.k8s.io"}, "resources": []string{"leases"}, "resourceNames": []string{primaryLeaseName(name)}, "verbs": []string{"get", "patch", "update"}},
+		{"apiGroups": []string{""}, "resources": []string{"pods"}, "verbs": []string{"get", "list", "patch"}},
+		// A manager takes the snapshot a running Backup names it for,
+		// and records how it went.
+		{"apiGroups": []string{apiGroup}, "resources": []string{"backups"}, "verbs": []string{"get", "list", "patch"}},
+		{"apiGroups": []string{apiGroup}, "resources": []string{"backups/status"}, "verbs": []string{"patch"}},
+	}
+	if len(secrets) > 0 {
+		// The object store's credentials, and no other Secret.
+		rules = append(rules, map[string]any{"apiGroups": []string{""}, "resources": []string{"secrets"}, "resourceNames": secrets, "verbs": []string{"get"}})
+	}
 	list := []child{
 		{serviceAccountsResource, name, map[string]any{
 			"apiVersion": "v1", "kind": "ServiceAccount", "metadata": childMeta(r, name, nil),
@@ -60,14 +74,9 @@ func children(r *Redis, operatorImage string) []child {
 		{rolesResource, name, map[string]any{
 			"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role", "metadata": childMeta(r, name, nil),
 			// What an instance manager reads and writes: its Redis, the
-			// primary Lease, and the pods of its Redis, whose IPs it
-			// follows and whose annotation asks for a switchover.
-			"rules": []map[string]any{
-				{"apiGroups": []string{apiGroup}, "resources": []string{"redis"}, "resourceNames": []string{name}, "verbs": []string{"get"}},
-				{"apiGroups": []string{"coordination.k8s.io"}, "resources": []string{"leases"}, "verbs": []string{"create"}},
-				{"apiGroups": []string{"coordination.k8s.io"}, "resources": []string{"leases"}, "resourceNames": []string{primaryLeaseName(name)}, "verbs": []string{"get", "patch", "update"}},
-				{"apiGroups": []string{""}, "resources": []string{"pods"}, "verbs": []string{"get", "list", "patch"}},
-			},
+			// primary Lease, the pods of its Redis, whose IPs it follows
+			// and whose annotation asks for a switchover, and its backups.
+			"rules": rules,
 		}},
 		{roleBindingsResource, name, map[string]any{
 			"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding", "metadata": childMeta(r, name, nil),
@@ -88,7 +97,7 @@ func children(r *Redis, operatorImage string) []child {
 				"selector":     map[string]any{"matchLabels": map[string]string{clusterLabel: name, roleLabel: roleReplica}},
 			},
 		}},
-		statefulSet(r, operatorImage),
+		statefulSet(r, operatorImage, restore),
 	}
 	if r.Spec.instances() > 1 {
 		// An eviction cannot take the primary. The operator switches over
@@ -119,7 +128,7 @@ func service(r *Redis, name string, selector map[string]string, headless bool) c
 	}}
 }
 
-func statefulSet(r *Redis, operatorImage string) child {
+func statefulSet(r *Redis, operatorImage string, restore *BackupVolume) child {
 	name := r.Metadata.Name
 	podLabels := map[string]string{clusterLabel: name}
 	env := []map[string]any{
@@ -165,19 +174,16 @@ func statefulSet(r *Redis, operatorImage string) child {
 		}},
 		"containers": []map[string]any{{
 			"name":           "redis",
-			"image":          r.Spec.image(),
+			"image":          servingImage(r),
 			"command":        []string{"/manager/redis-operator", "manager"},
 			"env":            env,
 			"ports":          []map[string]any{{"name": "redis", "containerPort": serverPort}, {"name": "status", "containerPort": statusPort}},
 			"resources":      resources,
 			"readinessProbe": probe("/ready", 2, 1),
 			"livenessProbe":  probe("/healthz", 10, 3),
-			"volumeMounts": []map[string]any{
-				{"name": "manager", "mountPath": "/manager"},
-				{"name": "data", "mountPath": "/data"},
-			},
+			"volumeMounts":   mounts(r, restore),
 		}},
-		"volumes": volumes(r),
+		"volumes": volumes(r, restore),
 	}
 	if len(r.Spec.NodeSelector) > 0 {
 		podSpec["nodeSelector"] = r.Spec.NodeSelector
@@ -216,10 +222,30 @@ func statefulSet(r *Redis, operatorImage string) child {
 	}}
 }
 
-func volumes(r *Redis) []map[string]any {
+func volumes(r *Redis, restore *BackupVolume) []map[string]any {
 	list := []map[string]any{{"name": "manager", "emptyDir": map[string]any{}}}
 	if !r.Spec.persistent() {
 		list = append(list, map[string]any{"name": "data", "emptyDir": map[string]any{}})
+	}
+	if b := r.Spec.Backup; b != nil && b.Volume != nil {
+		list = append(list, b.Volume.podVolume("backups"))
+	}
+	if restore != nil {
+		list = append(list, restore.podVolume("restore"))
+	}
+	return list
+}
+
+func mounts(r *Redis, restore *BackupVolume) []map[string]any {
+	list := []map[string]any{
+		{"name": "manager", "mountPath": "/manager"},
+		{"name": "data", "mountPath": "/data"},
+	}
+	if b := r.Spec.Backup; b != nil && b.Volume != nil {
+		list = append(list, map[string]any{"name": "backups", "mountPath": backupMount})
+	}
+	if restore != nil {
+		list = append(list, map[string]any{"name": "restore", "mountPath": restoreMount, "readOnly": true})
 	}
 	return list
 }

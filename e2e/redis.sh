@@ -50,7 +50,7 @@ kind: Pod
 metadata:
   name: writer
 spec:
-  nodeName: $SERVER
+  ${WRITER_NODE:+nodeName: $WRITER_NODE}
   restartPolicy: Never
   containers:
     - name: writer

@@ -1,0 +1,52 @@
+# A ScheduledBackup makes a Backup of a Redis on a cron schedule.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: scheduledbackups.redis.guid.foo
+spec:
+  group: redis.guid.foo
+  scope: Namespaced
+  names:
+    kind: ScheduledBackup
+    listKind: ScheduledBackupList
+    plural: scheduledbackups
+    singular: scheduledbackup
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Redis
+          type: string
+          jsonPath: .spec.redis
+        - name: Schedule
+          type: string
+          jsonPath: .spec.schedule
+        - name: Last
+          type: string
+          jsonPath: .status.lastScheduleTime
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [redis, schedule]
+              properties:
+                redis:
+                  type: string
+                schedule:
+                  type: string
+                  description: A five-field cron schedule, in UTC, such as "0 3 * * *".
+                  pattern: '^\S+ \S+ \S+ \S+ \S+$'
+            status:
+              type: object
+              properties:
+                lastScheduleTime: {type: string}
+                lastBackup: {type: string}

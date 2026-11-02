@@ -56,6 +56,9 @@ type RedisSpec struct {
 	NodeSelector       map[string]string `json:"nodeSelector,omitempty"`
 	Tolerations        []map[string]any  `json:"tolerations,omitempty"`
 	PriorityClassName  string            `json:"priorityClassName,omitempty"`
+	Backup             *BackupStore      `json:"backup,omitempty"`
+	Bootstrap          *Bootstrap        `json:"bootstrap,omitempty"`
+	Replica            *ReplicaSpec      `json:"replica,omitempty"`
 }
 
 type StorageSpec struct {
@@ -75,7 +78,12 @@ type RedisStatus struct {
 	ReadyInstances int               `json:"readyInstances,omitempty"`
 	Instances      []InstanceStatus  `json:"instances,omitempty"`
 	Switchover     *SwitchoverStatus `json:"switchover,omitempty"`
-	Conditions     []Condition       `json:"conditions,omitempty"`
+	Replica        *ReplicaStatus    `json:"replica,omitempty"`
+	// Image is the image every instance runs, and Rollout a change to
+	// another that is under way or failed.
+	Image      string         `json:"image,omitempty"`
+	Rollout    *RolloutStatus `json:"rollout,omitempty"`
+	Conditions []Condition    `json:"conditions,omitempty"`
 }
 
 type InstanceStatus struct {

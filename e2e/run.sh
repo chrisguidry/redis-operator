@@ -14,6 +14,9 @@ REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 E2E_DIR="$REPO_ROOT/e2e"
 ENGINE=${ENGINE:-redis}
 NS=e2e
+# SCENARIOS names the scenarios to run, in order, such as
+# SCENARIOS=adoption to run one of them alone.
+SCENARIOS=${SCENARIOS:-delete_primary drain_primary_node operator_down freeze_primary partition_primary backup_restore adoption rollout upgrade broken_image}
 
 # shellcheck source=common.sh disable=SC1091
 source "$E2E_DIR/common.sh"
@@ -23,6 +26,16 @@ source "$E2E_DIR/cluster.sh"
 source "$E2E_DIR/redis.sh"
 # shellcheck source=scenarios.sh disable=SC1091
 source "$E2E_DIR/scenarios.sh"
+# shellcheck source=backup.sh disable=SC1091
+source "$E2E_DIR/backup.sh"
+# shellcheck source=adoption.sh disable=SC1091
+source "$E2E_DIR/adoption.sh"
+# shellcheck source=upgrade.sh disable=SC1091
+source "$E2E_DIR/upgrade.sh"
+
+for scenario in $SCENARIOS; do
+  declare -F "scenario_$scenario" >/dev/null || die "there is no scenario named $scenario"
+done
 
 case "$ENGINE" in
   redis) SERVER_IMAGE=$(sed -n 's/^[[:space:]]*engineRedis: *"\(.*\)",$/\1/p' "$REPO_ROOT/api_redis.go") ;;
@@ -33,6 +46,8 @@ esac
 RUN_ID=$(random_id)
 NETWORK="redis-e2e-$RUN_ID"
 SERVER="redis-e2e-$RUN_ID"
+# The writer runs on the server node, which no scenario drains.
+WRITER_NODE=$SERVER
 OPERATOR_IMAGE="ghcr.io/chrisguidry/redis-operator:e2e-$RUN_ID"
 
 # .e2e/ is under the repository, not the system temp directory, which
@@ -78,11 +93,8 @@ deploy_operator
 create_redis
 start_writer
 
-scenario_delete_primary
-scenario_drain_primary_node
-scenario_operator_down
-scenario_freeze_primary
-scenario_partition_primary
-scenario_rollout
+for scenario in $SCENARIOS; do
+  "scenario_$scenario"
+done
 
-log "all scenarios passed on $ENGINE"
+log "scenarios passed on $ENGINE: $SCENARIOS"

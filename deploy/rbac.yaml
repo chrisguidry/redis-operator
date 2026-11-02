@@ -10,6 +10,17 @@ rules:
   - apiGroups: [redis.guid.foo]
     resources: [redis]
     verbs: [get, list, watch]
+  # A ScheduledBackup makes Backups, retention deletes them, and a
+  # finalizer on each deletes its object from the store first.
+  - apiGroups: [redis.guid.foo]
+    resources: [backups]
+    verbs: [get, list, watch, create, delete, patch]
+  - apiGroups: [redis.guid.foo]
+    resources: [scheduledbackups]
+    verbs: [get, list, watch]
+  - apiGroups: [redis.guid.foo]
+    resources: [backups/status, scheduledbackups/status]
+    verbs: [patch]
   # The decision, status.targetPrimary, is written with a merge patch
   # that states the resourceVersion read.
   - apiGroups: [redis.guid.foo]
@@ -47,7 +58,9 @@ rules:
     resources: [roles, rolebindings]
     verbs: [create, patch]
   # The connection Secret is created once, and read to learn whether it
-  # exists. The operator never lists Secrets.
+  # exists. An object store's credentials Secret is read to delete a
+  # Backup's object. The operator never lists Secrets, and it grants
+  # each Redis's instance managers its store's Secret by name.
   - apiGroups: [""]
     resources: [secrets]
     verbs: [get, create]

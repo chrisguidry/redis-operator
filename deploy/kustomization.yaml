@@ -22,6 +22,8 @@ namespace: redis-operator
 
 resources:
   - redis-crd.yaml
+  - backups-crd.yaml
+  - scheduledbackups-crd.yaml
   - rbac.yaml
   - operator.yaml
 

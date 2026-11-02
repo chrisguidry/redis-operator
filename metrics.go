@@ -28,7 +28,7 @@ const (
 
 // The resources the operator watches, by the name that labels their
 // restarts.
-var watchedResources = []string{"redis", "pods", "leases", "nodes", "statefulsets"}
+var watchedResources = []string{"redis", "pods", "leases", "nodes", "statefulsets", "backups", "scheduledbackups"}
 
 type metrics struct {
 	registry *prometheus.Registry

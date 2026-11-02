@@ -8,7 +8,6 @@ package main
 import (
 	"os"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 
@@ -27,9 +26,17 @@ import (
 
 const redisCRD = "deploy/redis-crd.yaml"
 
+// crds lists every definition this repository ships.
+var crds = []string{redisCRD, "deploy/backups-crd.yaml", "deploy/scheduledbackups-crd.yaml"}
+
 func loadCRD(t *testing.T) *apiextensionsv1.CustomResourceDefinition {
 	t.Helper()
-	raw, err := os.ReadFile(redisCRD)
+	return loadCRDFrom(t, redisCRD)
+}
+
+func loadCRDFrom(t *testing.T, path string) *apiextensionsv1.CustomResourceDefinition {
+	t.Helper()
+	raw, err := os.ReadFile(path)
 	mustSucceed(t, err)
 	crd := &apiextensionsv1.CustomResourceDefinition{}
 	mustSucceed(t, yaml.UnmarshalStrict(raw, crd))
@@ -49,17 +56,47 @@ func TestTheCRDNamesTheResourceTheOperatorWatches(t *testing.T) {
 // The API server runs the whole definition through this before it
 // serves the resource, and that pass compiles each CEL rule and
 // estimates its cost.
-func TestTheAPIServerWouldAcceptTheCRD(t *testing.T) {
-	scheme := runtime.NewScheme()
-	install.Install(scheme)
-	internal := &apiextensions.CustomResourceDefinition{}
-	mustSucceed(t, scheme.Convert(loadCRD(t), internal, nil))
-	internal.Status.StoredVersions = []string{internal.Spec.Versions[0].Name}
+func TestTheAPIServerWouldAcceptEveryCRD(t *testing.T) {
+	for _, path := range crds {
+		t.Run(path, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			install.Install(scheme)
+			internal := &apiextensions.CustomResourceDefinition{}
+			mustSucceed(t, scheme.Convert(loadCRDFrom(t, path), internal, nil))
+			internal.Status.StoredVersions = []string{internal.Spec.Versions[0].Name}
 
-	errs := crdvalidation.ValidateCustomResourceDefinition(t.Context(), internal)
+			errs := crdvalidation.ValidateCustomResourceDefinition(t.Context(), internal)
 
-	if len(errs) > 0 {
-		t.Fatalf("the API server would refuse the definition: %v", errs)
+			if len(errs) > 0 {
+				t.Fatalf("the API server would refuse the definition: %v", errs)
+			}
+		})
+	}
+}
+
+// Every spec field the Go types read is in its schema, so no field the
+// operator acts on is one the API server drops.
+func TestEverySchemaHoldsItsSpecFields(t *testing.T) {
+	cases := []struct {
+		path string
+		spec reflect.Type
+	}{
+		{redisCRD, reflect.TypeFor[RedisSpec]()},
+		{"deploy/backups-crd.yaml", reflect.TypeFor[BackupSpec]()},
+		{"deploy/scheduledbackups-crd.yaml", reflect.TypeFor[ScheduledBackupSpec]()},
+	}
+	for _, c := range cases {
+		t.Run(c.path, func(t *testing.T) {
+			properties := loadCRDFrom(t, c.path).Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"].Properties
+			var missing []string
+			for i := range c.spec.NumField() {
+				name, _, _ := strings.Cut(c.spec.Field(i).Tag.Get("json"), ",")
+				if _, ok := properties[name]; !ok {
+					missing = append(missing, name)
+				}
+			}
+			mustMatch(t, strings.Join(missing, ","), "")
+		})
 	}
 }
 
@@ -147,28 +184,4 @@ func TestTheEngineAndStorageCannotChange(t *testing.T) {
 			mustMatch(t, strings.Contains(errs.ToAggregate().Error(), c.want), true)
 		})
 	}
-}
-
-// Every spec field the Go type reads is in the schema, so no field the
-// operator acts on is one the API server drops.
-func TestTheSchemaHoldsEverySpecField(t *testing.T) {
-	properties := loadCRD(t).Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"].Properties
-	fields := reflect.TypeFor[RedisSpec]()
-
-	var missing []string
-	for i := range fields.NumField() {
-		name, _, _ := strings.Cut(fields.Field(i).Tag.Get("json"), ",")
-		if _, ok := properties[name]; !ok {
-			missing = append(missing, name)
-		}
-	}
-
-	mustMatch(t, strings.Join(missing, ","), "")
-	mustMatch(t, slices.Contains(slices.Collect(func(yield func(string) bool) {
-		for name := range properties {
-			if !yield(name) {
-				return
-			}
-		}
-	}), "engine"), true)
 }

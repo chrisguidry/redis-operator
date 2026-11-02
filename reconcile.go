@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 )
@@ -28,7 +29,7 @@ import (
 var (
 	leasesWatched = kubeResource{"coordination.k8s.io", "v1", "leases"}
 	// watchedCollections is the order in which run lists the resources.
-	watchedCollections = []kubeResource{redisResource, podsResource, leasesWatched, statefulSetsResource, nodesResource}
+	watchedCollections = []kubeResource{redisResource, podsResource, leasesWatched, statefulSetsResource, nodesResource, backupsResource, scheduledBackupsResource}
 )
 
 // selectors limits the watches of pods, Leases, and StatefulSets to the
@@ -41,11 +42,13 @@ var selectors = map[kubeResource]string{
 }
 
 var trims = map[kubeResource]func(json.RawMessage) (json.RawMessage, error){
-	redisResource:        trimTo[Redis],
-	podsResource:         trimTo[Pod],
-	leasesWatched:        trimTo[Lease],
-	statefulSetsResource: trimTo[StatefulSet],
-	nodesResource:        trimTo[Node],
+	redisResource:            trimTo[Redis],
+	podsResource:             trimTo[Pod],
+	leasesWatched:            trimTo[Lease],
+	statefulSetsResource:     trimTo[StatefulSet],
+	nodesResource:            trimTo[Node],
+	backupsResource:          trimTo[Backup],
+	scheduledBackupsResource: trimTo[ScheduledBackup],
 }
 
 // The operator's timings. They are fields of the controller so a test
@@ -66,10 +69,16 @@ type timings struct {
 	pendingWait time.Duration
 	// switchoverDeadline is how long a switchover may take before the
 	// operator gives it up, and switchoverBackoff how long it waits
-	// before it tries again.
+	// before it tries again. A promotion whose holder did not catch up
+	// waits switchoverBackoff too.
 	switchoverDeadline time.Duration
 	switchoverBackoff  time.Duration
 	pollTimeout        time.Duration
+	canarySoak         time.Duration
+	canaryTimeout      time.Duration
+	// canaryLagBytes is how far behind the primary a canary may be and
+	// still count as caught up.
+	canaryLagBytes int64
 }
 
 var defaultTimings = timings{
@@ -80,6 +89,9 @@ var defaultTimings = timings{
 	switchoverDeadline:  30 * time.Second,
 	switchoverBackoff:   30 * time.Second,
 	pollTimeout:         time.Second,
+	canarySoak:          defaultCanarySoak,
+	canaryTimeout:       defaultCanaryTimeout,
+	canaryLagBytes:      1 << 20,
 }
 
 type controller struct {
@@ -109,6 +121,13 @@ type redisState struct {
 	// after a primary had held it.
 	leaderlessSince time.Time
 	retryAfter      time.Time
+	// canarySince is when the rollout's canary was first seen proven.
+	canarySince time.Time
+	// promotionStarted is when a promotion paused the source, and
+	// promotionRetryAfter when a promotion that timed out may pause it
+	// again.
+	promotionStarted    time.Time
+	promotionRetryAfter time.Time
 	// applied holds the body of each child as last applied, so a steady
 	// pass writes nothing.
 	applied   map[string]string
@@ -192,6 +211,9 @@ type world struct {
 	leases       map[string]Lease
 	statefulSets map[string]StatefulSet
 	nodes        map[string]Node
+
+	backups          []Backup
+	scheduledBackups []ScheduledBackup
 }
 
 func (c *controller) read() (*world, error) {
@@ -229,6 +251,12 @@ func (c *controller) read() (*world, error) {
 	for _, node := range nodes {
 		w.nodes[node.Metadata.Name] = node
 	}
+	if w.backups, err = decodeSnapshot[Backup](c.watches[backupsResource].store); err != nil {
+		return nil, fmt.Errorf("decoding backups: %w", err)
+	}
+	if w.scheduledBackups, err = decodeSnapshot[ScheduledBackup](c.watches[scheduledBackupsResource].store); err != nil {
+		return nil, fmt.Errorf("decoding scheduledbackups: %w", err)
+	}
 	return w, nil
 }
 
@@ -255,6 +283,7 @@ func (c *controller) pass(ctx context.Context) {
 		}
 		c.log.clear(subject, topicReconcile)
 	}
+	c.reconcileBackups(ctx, w)
 	for uid := range c.states {
 		if !live[uid] {
 			delete(c.states, uid)
@@ -273,7 +302,7 @@ func (c *controller) state(r *Redis) *redisState {
 
 // ensureChildren applies each child whose body changed since the
 // operator last applied it, and creates the Secret once.
-func (c *controller) ensureChildren(ctx context.Context, r *Redis, st *redisState) error {
+func (c *controller) ensureChildren(ctx context.Context, r *Redis, st *redisState, w *world) error {
 	if !st.hasSecret {
 		var existing map[string]any
 		err := c.client.get(ctx, secretsResource, r.Metadata.Namespace, secretName(r.Metadata.Name), &existing)
@@ -289,7 +318,7 @@ func (c *controller) ensureChildren(ctx context.Context, r *Redis, st *redisStat
 		}
 		st.hasSecret = true
 	}
-	for _, each := range children(r, c.operatorImage) {
+	for _, each := range children(r, c.operatorImage, storeSecrets(r, w), restoreVolume(r, w)) {
 		body, err := json.Marshal(each.body)
 		if err != nil {
 			return err
@@ -363,4 +392,50 @@ func (st *redisState) fresh(name string, now time.Time, within time.Duration) (i
 	}
 	report, ok := st.reports[name]
 	return report, ok
+}
+
+// storeSecrets names the Secrets that hold the credentials of r's
+// object stores: its own, and the store of the Backup it restores
+// from, which its instance managers may read.
+func storeSecrets(r *Redis, w *world) []string {
+	var names []string
+	if r.Spec.Backup != nil && r.Spec.Backup.Volume == nil && r.Spec.Backup.Credentials.Secret != "" {
+		names = append(names, r.Spec.Backup.Credentials.Secret)
+	}
+	if replica := r.Spec.Replica; replica != nil && replica.Source.Password != nil && !slices.Contains(names, replica.Source.Password.Secret) {
+		names = append(names, replica.Source.Password.Secret)
+	}
+	if b := r.Spec.Bootstrap; b != nil && b.Recovery != nil && b.Recovery.Backup != "" {
+		for _, backup := range w.backups {
+			if backup.Metadata.Namespace == r.Metadata.Namespace && backup.Metadata.Name == b.Recovery.Backup &&
+				backup.Status.Store != nil && !slices.Contains(names, backup.Status.Store.Credentials.Secret) {
+				names = append(names, backup.Status.Store.Credentials.Secret)
+			}
+		}
+	}
+	return names
+}
+
+// restoreVolume is the volume a new Redis restores from, when its
+// recovery names a Backup on a volume. It stays mounted, read-only,
+// while the spec names the recovery, because removing it would change
+// the pod template and roll every pod after the restore.
+func restoreVolume(r *Redis, w *world) *BackupVolume {
+	b := r.Spec.Bootstrap
+	if b == nil || b.Recovery == nil {
+		return nil
+	}
+	if b.Recovery.Backup == "" {
+		if r.Spec.Backup != nil && r.Spec.Backup.Volume != nil {
+			return r.Spec.Backup.Volume
+		}
+		return nil
+	}
+	for _, backup := range w.backups {
+		if backup.Metadata.Namespace == r.Metadata.Namespace && backup.Metadata.Name == b.Recovery.Backup &&
+			backup.Status.Store != nil && backup.Status.Store.Volume != nil {
+			return backup.Status.Store.Volume
+		}
+	}
+	return nil
 }

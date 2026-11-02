@@ -110,12 +110,20 @@ func startTestStore(t *testing.T) string {
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
+	// A new SeaweedFS server answers its first write slowly, in about as
+	// long as a test gives an upload, and later writes at once. One write
+	// here takes that wait inside the startup deadline, before a test
+	// starts timing anything.
+	writable, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	mustSucceed(t, store.put(writable, "ready", strings.NewReader("ready"), int64(len("ready"))))
+	mustSucceed(t, store.delete(writable, "ready"))
 	return endpoint
 }
 
 func testStore(t *testing.T, endpoint, destination string) *s3Store {
 	t.Helper()
-	store, err := newS3Store(endpoint, "us-east-1", destination, testAccessKey, testSecretKey)
+	store, err := newS3Store(endpoint, "us-east-1", destination, testAccessKey, testSecretKey, testNamespace)
 	mustSucceed(t, err)
 	return store
 }
@@ -149,7 +157,7 @@ func TestADeletedObjectIsGone(t *testing.T) {
 
 func TestAWrongSecretIsRefused(t *testing.T) {
 	endpoint := startTestStore(t)
-	store, err := newS3Store(endpoint, "", "s3://"+testBucket, testAccessKey, "wrong")
+	store, err := newS3Store(endpoint, "", "s3://"+testBucket, testAccessKey, "wrong", testNamespace)
 	mustSucceed(t, err)
 
 	err = store.put(context.Background(), "key", strings.NewReader("value"), 5)

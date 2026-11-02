@@ -40,6 +40,9 @@ func startHarness(t *testing.T, instances int) *harness {
 		reports:  map[string]instanceReport{},
 		silenced: map[string]bool{},
 	}
+	// The fake stamps creation times from the same clock the controller
+	// reads, as the API server and the operator share one time.
+	h.api.now = h.clock.now
 	h.api.create(redisResource, Redis{
 		APIVersion: apiVersion, Kind: redisKind,
 		Metadata: ObjectMeta{Name: h.name, Namespace: testNamespace},

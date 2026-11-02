@@ -40,6 +40,9 @@ type serverSettings struct {
 	maxmemoryPolicy    string
 	persistent         bool
 	minReplicasToWrite int
+	// restoredSnapshot starts the server with its append-only file off,
+	// so it loads the snapshot in its data directory.
+	restoredSnapshot bool
 }
 
 // minReplicasMaxLag is how long a replica may go without acknowledging
@@ -66,8 +69,10 @@ func (s serverSettings) config() string {
 		fmt.Sprintf("min-replicas-max-lag %d", minReplicasMaxLag),
 		fmt.Sprintf("replicaof %s %d", detachedHost, s.port),
 	}
-	if s.persistent {
+	if s.persistent && !s.restoredSnapshot {
 		lines = append(lines, "appendonly yes", "appendfsync everysec")
+	} else if s.persistent {
+		lines = append(lines, "appendonly no", "appendfsync everysec")
 	} else {
 		// With no volume, the data lives only in memory and in the
 		// replicas, and writing it to the container's disk would cost

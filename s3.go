@@ -57,7 +57,9 @@ func parseDestination(destination string) (bucket, prefix string, err error) {
 	return bucket, strings.Trim(prefix, "/"), nil
 }
 
-func newS3Store(endpoint, region, destination, accessKey, secretKey string) (*s3Store, error) {
+// newS3Store builds a client for destination. A single-label endpoint
+// host resolves in namespace (hosts.go).
+func newS3Store(endpoint, region, destination, accessKey, secretKey, namespace string) (*s3Store, error) {
 	bucket, prefix, err := parseDestination(destination)
 	if err != nil {
 		return nil, err
@@ -72,6 +74,7 @@ func newS3Store(endpoint, region, destination, accessKey, secretKey string) (*s3
 	if err != nil || parsed.Host == "" {
 		return nil, fmt.Errorf("endpoint %q is not a URL such as https://s3.example.com", endpoint)
 	}
+	parsed.Host = qualifyHost(parsed.Host, namespace)
 	return &s3Store{
 		endpoint: parsed, region: region, bucket: bucket, prefix: prefix,
 		accessKey: accessKey, secretKey: secretKey,

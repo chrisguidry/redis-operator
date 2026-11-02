@@ -1,0 +1,263 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+)
+
+// replicaOf declares replica mode on the harness's Redis for a source at
+// host and port, with its password Secret.
+func (h *harness) replicaOf(host string, port int, enabled bool) {
+	h.t.Helper()
+	var held map[string]any
+	if !h.api.read(secretsResource, testNamespace, "source", &held) {
+		h.api.create(secretsResource, map[string]any{
+			"apiVersion": "v1", "kind": "Secret",
+			"metadata": map[string]any{"name": "source", "namespace": testNamespace},
+			"data":     map[string]any{"password": []byte(sourcePassword)},
+		})
+	}
+	h.api.update(redisResource, testNamespace, h.name, func(object map[string]any) {
+		object["spec"].(map[string]any)["replica"] = toObject(h.t, ReplicaSpec{Enabled: enabled, Source: ReplicaSource{
+			Host: host, Port: port, Password: &SecretKeyRef{Secret: "source", Key: "password"},
+		}})
+	})
+}
+
+// adoptingHolder sets the reports of a Redis whose holder follows a
+// source at offset.
+func (h *harness) adoptingHolder(sourceHost string, offset int64) {
+	h.holdLease("cache-0")
+	h.setReport(instanceReport{Name: "cache-0", Role: reportReplica, HoldsLease: true, Target: "cache-0", Offset: offset, LinkUp: true, Following: sourceHost, HasData: true, Ready: true})
+	h.setReport(instanceReport{Name: "cache-1", Role: reportReplica, Target: "cache-0", Offset: offset, LinkUp: true, Following: h.ip("cache-0"), HasData: true, Ready: true})
+}
+
+func sourceOffsetOf(t *testing.T, source *testServer) int64 {
+	t.Helper()
+	info, err := readReplication(context.Background(), sourceClient(t, source))
+	mustSucceed(t, err)
+	return info.offset
+}
+
+func TestANewRedisNamingASourceReplicatesAndReportsItsLag(t *testing.T) {
+	source := startSource(t, "redis")
+	host, port := sourceHostPort(source)
+	h := startHarness(t, 2)
+	h.replicaOf(host, port, true)
+
+	h.pass()
+	mustMatch(t, h.redis().Status.Replica.Phase, replicaReplicating)
+	h.adoptingHolder(host, 0)
+	h.pass()
+
+	replica := h.redis().Status.Replica
+	mustMatch(t, replica.Source, fmt.Sprintf("%s:%d", host, port))
+	mustMatch(t, replica.Lag, replica.SourceOffset)
+}
+
+func TestPromotionPausesTheSourceAndWaitsForTheHolder(t *testing.T) {
+	source := startSource(t, "redis")
+	_, err := sourceClient(t, source).do(context.Background(), "SET", "before", "cutover")
+	mustSucceed(t, err)
+	host, port := sourceHostPort(source)
+	h := startHarness(t, 2)
+	h.replicaOf(host, port, true)
+	h.pass()
+	h.adoptingHolder(host, 0)
+	h.pass()
+
+	h.replicaOf(host, port, false)
+	h.pass()
+
+	mustMatch(t, h.redis().Status.Replica.Phase, replicaPromoting)
+	paused, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	_, err = sourceClient(t, source).do(paused, "SET", "during", "pause")
+	mustMatch(t, err != nil, true)
+
+	h.adoptingHolder(host, sourceOffsetOf(t, source))
+	h.pass()
+
+	mustMatch(t, h.redis().Status.Replica.Phase, replicaPromoted)
+	adopted, _ := findCondition(h.redis().Status.Conditions, "Adopted")
+	mustMatch(t, adopted.Status, ConditionTrue)
+}
+
+func TestPromotionWithAnUnreachableSourcePromotesAtOnce(t *testing.T) {
+	h := startHarness(t, 2)
+	port := freePort(t)
+	h.replicaOf("127.0.0.1", port, true)
+	h.pass()
+	h.adoptingHolder("127.0.0.1", 0)
+	h.pass()
+
+	h.replicaOf("127.0.0.1", port, false)
+	h.pass()
+
+	mustMatch(t, h.redis().Status.Replica.Phase, replicaPromoted)
+}
+
+func TestReplicaModeDoesNotStartOnARedisThatServed(t *testing.T) {
+	h := startHarness(t, 2)
+	h.steady("cache-0", 2)
+	h.pass()
+
+	h.replicaOf("127.0.0.1", 6379, true)
+	h.pass()
+
+	mustMatch(t, h.redis().Status.Replica == nil, true)
+	adopted, _ := findCondition(h.redis().Status.Conditions, "Adopted")
+	mustMatch(t, adopted.Reason, "AlreadyPrimary")
+}
+
+// adoptingHolderUnlinked sets the reports of a Redis whose holder lost
+// its link to the source, so it cannot catch up.
+func (h *harness) adoptingHolderUnlinked(sourceHost string) {
+	h.holdLease("cache-0")
+	h.setReport(instanceReport{Name: "cache-0", Role: reportReplica, HoldsLease: true, Target: "cache-0", Following: sourceHost, HasData: true, Ready: true})
+	h.setReport(instanceReport{Name: "cache-1", Role: reportReplica, Target: "cache-0", LinkUp: true, Following: h.ip("cache-0"), HasData: true, Ready: true})
+}
+
+func TestAPromotionThatDoesNotCatchUpWithinThePauseDoesNotPromote(t *testing.T) {
+	source := startSource(t, "redis")
+	host, port := sourceHostPort(source)
+	h := startHarness(t, 2)
+	h.replicaOf(host, port, true)
+	h.pass()
+	h.adoptingHolderUnlinked(host)
+	h.pass()
+	h.replicaOf(host, port, false)
+	h.pass()
+	mustMatch(t, h.redis().Status.Replica.Phase, replicaPromoting)
+
+	h.passFor(sourcePause, time.Second)
+
+	mustMatch(t, h.redis().Status.Replica.Phase, replicaReplicating)
+	adopted, _ := findCondition(h.redis().Status.Conditions, "Adopted")
+	mustMatch(t, adopted.Status, ConditionFalse)
+	mustMatch(t, adopted.Reason, "CatchUpTimedOut")
+}
+
+func TestAPromotionThatTimedOutPausesTheSourceAgainAfterTheBackoff(t *testing.T) {
+	source := startSource(t, "redis")
+	host, port := sourceHostPort(source)
+	h := startHarness(t, 2)
+	h.replicaOf(host, port, true)
+	h.pass()
+	h.adoptingHolderUnlinked(host)
+	h.pass()
+	h.replicaOf(host, port, false)
+	h.pass()
+	h.passFor(sourcePause, time.Second)
+
+	h.passFor(defaultTimings.switchoverBackoff, time.Second)
+	mustMatch(t, h.redis().Status.Replica.Phase, replicaPromoting)
+	h.adoptingHolder(host, sourceOffsetOf(t, source))
+	h.pass()
+
+	mustMatch(t, h.redis().Status.Replica.Phase, replicaPromoted)
+}
+
+// refuseClientCommands takes the CLIENT command from the source's
+// default user, as an ACL that forbids it does, or gives it back.
+func refuseClientCommands(t *testing.T, source *testServer, refuse bool) {
+	t.Helper()
+	rule := "+client"
+	if refuse {
+		rule = "-client"
+	}
+	_, err := sourceClient(t, source).do(context.Background(), "ACL", "SETUSER", "default", rule)
+	mustSucceed(t, err)
+}
+
+func TestASourceThatRefusesThePauseIsNotPromotedFrom(t *testing.T) {
+	source := startSource(t, "redis")
+	refuseClientCommands(t, source, true)
+	host, port := sourceHostPort(source)
+	h := startHarness(t, 2)
+	h.replicaOf(host, port, true)
+	h.pass()
+	h.adoptingHolder(host, 0)
+	h.pass()
+
+	h.replicaOf(host, port, false)
+	h.pass()
+
+	mustMatch(t, h.redis().Status.Replica.Phase, replicaReplicating)
+	adopted, _ := findCondition(h.redis().Status.Conditions, "Adopted")
+	mustMatch(t, adopted.Status, ConditionFalse)
+	mustMatch(t, adopted.Reason, "PauseRefused")
+	mustMatch(t, strings.Contains(adopted.Message, "NOPERM"), true)
+	mustMatch(t, strings.Contains(adopted.Message, "remove spec.replica"), true)
+}
+
+func TestASourceThatRefusedThePauseIsPausedAgainAfterTheBackoff(t *testing.T) {
+	source := startSource(t, "redis")
+	refuseClientCommands(t, source, true)
+	host, port := sourceHostPort(source)
+	h := startHarness(t, 2)
+	h.replicaOf(host, port, true)
+	h.pass()
+	h.adoptingHolder(host, 0)
+	h.pass()
+	h.replicaOf(host, port, false)
+	h.pass()
+	refuseClientCommands(t, source, false)
+
+	h.passFor(defaultTimings.switchoverBackoff, time.Second)
+
+	mustMatch(t, h.redis().Status.Replica.Phase, replicaPromoting)
+}
+
+// promoteFrom declares replica mode for a source at host and port whose
+// password is in the Secret secret, then turns it off, as a person
+// promoting the Redis does.
+func (h *harness) promoteFrom(host string, port int, secret string) {
+	h.t.Helper()
+	for _, enabled := range []bool{true, false} {
+		h.api.update(redisResource, testNamespace, h.name, func(object map[string]any) {
+			object["spec"].(map[string]any)["replica"] = toObject(h.t, ReplicaSpec{Enabled: enabled, Source: ReplicaSource{
+				Host: host, Port: port, Password: &SecretKeyRef{Secret: secret, Key: "password"},
+			}})
+		})
+		h.pass()
+		h.adoptingHolder(host, 0)
+		h.pass()
+	}
+}
+
+func TestASourceThatRefusesThePasswordIsNotPromotedFrom(t *testing.T) {
+	source := startSource(t, "redis")
+	host, port := sourceHostPort(source)
+	h := startHarness(t, 2)
+	h.api.create(secretsResource, map[string]any{
+		"apiVersion": "v1", "kind": "Secret",
+		"metadata": map[string]any{"name": "wrong", "namespace": testNamespace},
+		"data":     map[string]any{"password": []byte("not-" + sourcePassword)},
+	})
+
+	h.promoteFrom(host, port, "wrong")
+
+	mustMatch(t, h.redis().Status.Replica.Phase, replicaReplicating)
+	adopted, _ := findCondition(h.redis().Status.Conditions, "Adopted")
+	mustMatch(t, adopted.Status, ConditionFalse)
+	mustMatch(t, adopted.Reason, "SourceRefused")
+	mustMatch(t, strings.Contains(adopted.Message, "remove spec.replica"), true)
+}
+
+func TestAPromotionWhosePasswordSecretIsMissingWaits(t *testing.T) {
+	source := startSource(t, "redis")
+	host, port := sourceHostPort(source)
+	h := startHarness(t, 2)
+
+	h.promoteFrom(host, port, "missing")
+
+	mustMatch(t, h.redis().Status.Replica.Phase, replicaReplicating)
+	adopted, _ := findCondition(h.redis().Status.Conditions, "Adopted")
+	mustMatch(t, adopted.Status, ConditionFalse)
+	mustMatch(t, adopted.Reason, "PasswordUnreadable")
+	mustMatch(t, strings.Contains(adopted.Message, "missing"), true)
+}

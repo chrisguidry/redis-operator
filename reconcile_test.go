@@ -269,3 +269,29 @@ func TestTheReplicaBudgetKeepsAllButOneReplica(t *testing.T) {
 		})
 	}
 }
+
+// A frozen primary keeps its Lease until it expires, so after a
+// failover names the next primary, the old holder's silence is no new
+// failure: the operator waits on the target it named.
+func TestASilentOldHolderDoesNotRestartAFailoverItAlreadyStarted(t *testing.T) {
+	h := startHarness(t, 3)
+	h.steady("cache-0", 3)
+	h.pass()
+	h.silence("cache-0")
+	h.passFor(8*time.Second, 2*time.Second)
+	h.setReport(instanceReport{Name: "cache-1", Role: reportDetached, Offset: 120, HasData: true})
+	h.setReport(instanceReport{Name: "cache-2", Role: reportDetached, Offset: 90, HasData: true})
+	h.passFor(2*time.Second, 2*time.Second)
+	mustMatch(t, h.redis().Status.TargetPrimary, "cache-1")
+
+	h.passFor(14*time.Second, 2*time.Second)
+
+	failovers := 0
+	for _, line := range h.log.lines() {
+		if strings.Contains(line, "failing over") {
+			failovers++
+		}
+	}
+	mustMatch(t, failovers, 1)
+	mustMatch(t, h.redis().Status.TargetPrimary, "cache-1")
+}

@@ -38,6 +38,10 @@ spec:
         - name: Age
           type: date
           jsonPath: .metadata.creationTimestamp
+        - name: Image
+          type: string
+          jsonPath: .status.image
+          priority: 1
         - name: Target
           type: string
           jsonPath: .status.targetPrimary
@@ -54,6 +58,8 @@ spec:
             spec:
               type: object
               x-kubernetes-validations:
+                - rule: "!has(self.bootstrap) || !has(self.bootstrap.recovery) || !has(self.bootstrap.recovery.key) || has(self.backup)"
+                  message: a recovery from a key needs spec.backup to name the store
                 - rule: "!has(self.minReplicasToWrite) || self.minReplicasToWrite < (has(self.instances) ? self.instances : 1)"
                   message: minReplicasToWrite must be less than instances, or the primary could never accept a write
               properties:
@@ -110,6 +116,101 @@ spec:
                     x-kubernetes-preserve-unknown-fields: true
                 priorityClassName:
                   type: string
+                backup:
+                  type: object
+                  description: Where this Redis's Backups go, an S3-compatible object store or a volume every instance mounts.
+                  x-kubernetes-validations:
+                    - rule: has(self.destination) != has(self.volume)
+                      message: a backup store is either an object store destination or a volume, not both
+                    - rule: "!has(self.destination) || has(self.credentials)"
+                      message: an object store destination needs credentials
+                  properties:
+                    destination:
+                      type: string
+                      pattern: '^s3://[^/]+(/.*)?$'
+                      description: s3://bucket/prefix. Objects land under prefix/namespace/name/.
+                    endpoint:
+                      type: string
+                      description: The store's URL, such as https://s3.example.com. The default is AWS S3 in the region.
+                    region:
+                      type: string
+                      default: us-east-1
+                    credentials:
+                      type: object
+                      required: [secret]
+                      properties:
+                        secret:
+                          type: string
+                          description: A Secret in this namespace with the keys ACCESS_KEY_ID and SECRET_ACCESS_KEY.
+                    volume:
+                      type: object
+                      description: A volume every instance mounts at once. Files land under namespace/name/ in it.
+                      x-kubernetes-validations:
+                        - rule: has(self.claimName) != has(self.nfs)
+                          message: a backup volume is either a claim or an NFS export, not both
+                      properties:
+                        claimName:
+                          type: string
+                          description: A PersistentVolumeClaim in this namespace. It must be ReadWriteMany.
+                        nfs:
+                          type: object
+                          required: [server, path]
+                          properties:
+                            server: {type: string}
+                            path: {type: string}
+                    retention:
+                      type: string
+                      pattern: '^([1-9][0-9]*d|([0-9]+(\.[0-9]+)?(h|m|s))+)$'
+                      description: How long a completed Backup is kept, such as 7d or 36h. The newest is always kept.
+                bootstrap:
+                  type: object
+                  description: How the first primary of a new Redis gets its data. It is read only before any primary has run.
+                  properties:
+                    recovery:
+                      type: object
+                      description: Restore a snapshot, from a Backup in this namespace or from a key in spec.backup's store.
+                      x-kubernetes-validations:
+                        - rule: has(self.backup) != has(self.key)
+                          message: recovery names either a backup or a key, not both
+                      properties:
+                        backup:
+                          type: string
+                        key:
+                          type: string
+                replica:
+                  type: object
+                  description: Replicate from a Redis or Valkey outside the operator, then promote by setting enabled to false.
+                  required: [enabled, source]
+                  properties:
+                    enabled:
+                      type: boolean
+                    source:
+                      type: object
+                      x-kubernetes-validations:
+                        - rule: has(self.host) != has(self.sentinel)
+                          message: a source names either a host or its sentinels, not both
+                      properties:
+                        host:
+                          type: string
+                        port:
+                          type: integer
+                          minimum: 1
+                          maximum: 65535
+                        password:
+                          type: object
+                          required: [secret, key]
+                          properties:
+                            secret: {type: string}
+                            key: {type: string}
+                        sentinel:
+                          type: object
+                          required: [masterName, addresses]
+                          properties:
+                            masterName: {type: string}
+                            addresses:
+                              type: array
+                              minItems: 1
+                              items: {type: string}
             status:
               type: object
               properties:
@@ -130,6 +231,23 @@ spec:
                       role: {type: string}
                       ready: {type: boolean}
                       offset: {type: integer}
+                image:
+                  type: string
+                rollout:
+                  type: object
+                  properties:
+                    image: {type: string}
+                    phase: {type: string, enum: [Canary, Rolling, Failed]}
+                    canary: {type: string}
+                    startedAt: {type: string}
+                    reason: {type: string}
+                replica:
+                  type: object
+                  properties:
+                    phase: {type: string, enum: [Replicating, Promoting, Promoted]}
+                    source: {type: string}
+                    sourceOffset: {type: integer}
+                    lag: {type: integer}
                 switchover:
                   type: object
                   properties:

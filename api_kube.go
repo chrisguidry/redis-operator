@@ -19,9 +19,35 @@ type PodSpec struct {
 }
 
 type PodStatus struct {
-	Phase      string         `json:"phase,omitempty"`
-	PodIP      string         `json:"podIP,omitempty"`
-	Conditions []PodCondition `json:"conditions,omitempty"`
+	Phase             string            `json:"phase,omitempty"`
+	PodIP             string            `json:"podIP,omitempty"`
+	Conditions        []PodCondition    `json:"conditions,omitempty"`
+	ContainerStatuses []ContainerStatus `json:"containerStatuses,omitempty"`
+}
+
+// ContainerStatus says why a container is not running, such as
+// ImagePullBackOff or CrashLoopBackOff.
+type ContainerStatus struct {
+	Name  string `json:"name"`
+	State struct {
+		Waiting *struct {
+			Reason  string `json:"reason,omitempty"`
+			Message string `json:"message,omitempty"`
+		} `json:"waiting,omitempty"`
+	} `json:"state"`
+}
+
+// waitingReason is why the pod's server container waits, or "".
+func (p Pod) waitingReason() string {
+	for _, status := range p.Status.ContainerStatuses {
+		if w := status.State.Waiting; w != nil && w.Reason != "" {
+			if w.Message != "" {
+				return w.Reason + ": " + w.Message
+			}
+			return w.Reason
+		}
+	}
+	return ""
 }
 
 type PodCondition struct {

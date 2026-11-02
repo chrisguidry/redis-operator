@@ -19,6 +19,8 @@ type ObjectMeta struct {
 	Annotations       map[string]string `json:"annotations,omitempty"`
 	OwnerReferences   []OwnerReference  `json:"ownerReferences,omitempty"`
 	DeletionTimestamp string            `json:"deletionTimestamp,omitempty"`
+	CreationTimestamp string            `json:"creationTimestamp,omitempty"`
+	Finalizers        []string          `json:"finalizers,omitempty"`
 }
 
 // OwnerReference makes the garbage collector delete an object when its

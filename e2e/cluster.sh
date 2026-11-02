@@ -42,9 +42,10 @@ load_images() {
   log "building the operator image ($OPERATOR_IMAGE)"
   docker build -q -t "$OPERATOR_IMAGE" --build-arg VERSION=e2e "$REPO_ROOT" >/dev/null
   docker pull -q "$SERVER_IMAGE" >/dev/null
-  log "loading $OPERATOR_IMAGE and $SERVER_IMAGE into every node"
+  docker pull -q "$SEAWEEDFS_IMAGE" >/dev/null
+  log "loading $OPERATOR_IMAGE, $SERVER_IMAGE, and $SEAWEEDFS_IMAGE into every node"
   for node in $(node_containers); do
-    docker save "$OPERATOR_IMAGE" "$SERVER_IMAGE" | docker exec -i "$node" ctr images import - >/dev/null
+    docker save "$OPERATOR_IMAGE" "$SERVER_IMAGE" "$SEAWEEDFS_IMAGE" | docker exec -i "$node" ctr images import - >/dev/null
   done
 }
 
@@ -56,6 +57,8 @@ deploy_operator() {
   kubectl kustomize "$REPO_ROOT/deploy" |
     sed "s#ghcr.io/chrisguidry/redis-operator:latest#$OPERATOR_IMAGE#" |
     kubectl apply -f - >/dev/null
+  # Short canary timings, so a failed rollout shows within the run.
+  kubectl -n redis-operator set env deployment/redis-operator CANARY_SOAK=20s CANARY_TIMEOUT=90s >/dev/null
   kubectl -n redis-operator rollout status deployment/redis-operator --timeout=120s >/dev/null
 }
 

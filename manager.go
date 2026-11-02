@@ -34,6 +34,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -65,6 +66,10 @@ type managerConfig struct {
 	dataDir    string
 	configPath string
 	password   string
+	// backupDir and restoreDir are where the backup volume and the
+	// volume a new Redis restores from are mounted.
+	backupDir  string
+	restoreDir string
 
 	leaseDuration   time.Duration
 	renewDeadline   time.Duration
@@ -121,6 +126,18 @@ type manager struct {
 	askedHandover bool
 	lastLine      string
 
+	// backupBusy is true while a snapshot runs in the background.
+	backupBusy atomic.Bool
+	// replicaMode is the decision that the holder follows replicaSource,
+	// and masterauth the password the server replicates with now.
+	replicaMode   bool
+	replicaSource ReplicaSource
+	masterauth    string
+
+	// enableAOF is true when the server started from a restored snapshot
+	// with its append-only file off, and must turn it on once it runs.
+	enableAOF bool
+
 	mutex  sync.Mutex
 	report instanceReport
 }
@@ -157,10 +174,23 @@ func (m *manager) run(stop context.Context) error {
 		return err
 	}
 	m.persist = settings.persistent
+	m.masterauth = m.config.password
 	m.lease.owner = OwnerReference{APIVersion: apiVersion, Kind: redisKind, Name: redis.Metadata.Name, UID: redis.Metadata.UID}
 	m.hasData = m.persist && dataOnDisk(m.config.dataDir)
 	if err := m.releaseLeaseIfEmpty(work); err != nil {
 		return err
+	}
+	restored, err := m.restoreIfNeeded(work, redis)
+	if err != nil {
+		return err
+	}
+	if restored {
+		m.hasData = true
+		// A server with its append-only file on and no such file starts
+		// empty and ignores the snapshot, so it starts with the file off
+		// and turns it on once the snapshot is loaded.
+		settings.restoredSnapshot = true
+		m.enableAOF = settings.persistent
 	}
 
 	cmd, err := startServer(settings)
@@ -294,6 +324,16 @@ func (m *manager) step(ctx context.Context) {
 	if info.role == "slave" && info.linkUp && info.masterHost != detachedHost {
 		m.hasData = true
 	}
+	if m.enableAOF {
+		if _, err := m.server.do(ctx, "CONFIG", "SET", "appendonly", "yes"); err == nil {
+			m.enableAOF = false
+		}
+	}
+	// A server that has no data yet, such as a replica before its first
+	// sync, would upload an empty snapshot as a completed backup.
+	if apiErr == nil && m.hasData {
+		m.startBackups(ctx)
+	}
 
 	var actErr error
 	if m.lease.held() {
@@ -321,6 +361,10 @@ func (m *manager) readDecision(ctx context.Context, now time.Time) error {
 	m.target = redis.Status.TargetPrimary
 	m.everHadPrimary = redis.Status.CurrentPrimary != ""
 	m.minReplicas = redis.Spec.minReplicasToWrite()
+	m.replicaMode = redis.Status.replicating() && redis.Spec.Replica != nil
+	if redis.Spec.Replica != nil {
+		m.replicaSource = redis.Spec.Replica.Source
+	}
 	if err := m.lease.read(ctx, now); err != nil {
 		return err
 	}
@@ -368,6 +412,12 @@ func (m *manager) stepAsHolder(ctx context.Context, now time.Time, apiErr error,
 	}
 	switch m.target {
 	case m.config.podName:
+		if m.replicaMode {
+			return m.followSource(ctx, info)
+		}
+		if err := m.setMasterauth(ctx, m.config.password); err != nil {
+			return err
+		}
 		if err := m.server.promote(ctx, info); err != nil {
 			return err
 		}
@@ -391,6 +441,12 @@ func (m *manager) stepAsHolder(ctx context.Context, now time.Time, apiErr error,
 // releases the Lease. An aborted FAILOVER leaves this instance primary,
 // and the operator gives the switchover up.
 func (m *manager) handOver(ctx context.Context, now time.Time) error {
+	if m.replicaMode {
+		// The holder is a replica of the source, so there is no primary
+		// role to hand over: the next holder follows the source itself.
+		m.say(fmt.Sprintf("%s: giving the lease to %s, which follows the source in its place", m.config.podName, m.target))
+		return m.lease.release(ctx, now)
+	}
 	ip := m.podIPs[m.target]
 	if ip == "" {
 		return fmt.Errorf("cannot hand the primary role to %s: its pod has no IP", m.target)
@@ -463,6 +519,9 @@ func (m *manager) stepAsOther(ctx context.Context, now time.Time, info replicati
 		m.lastRenew = now
 		m.hasData = true
 		m.say(m.config.podName + ": took the primary lease")
+		if m.replicaMode {
+			return m.followSource(ctx, info)
+		}
 		if err := m.server.promote(ctx, info); err != nil {
 			return err
 		}
@@ -475,6 +534,9 @@ func (m *manager) stepAsOther(ctx context.Context, now time.Time, info replicati
 		m.line(m.config.podName + ": detached, a failover is pending")
 		return m.server.detach(ctx, info, m.config.port)
 	case holder != "" && holder != m.config.podName && m.podIPs[holder] != "":
+		if err := m.setMasterauth(ctx, m.config.password); err != nil {
+			return err
+		}
 		m.line(m.config.podName + ": following " + holder)
 		return m.server.follow(ctx, info, m.podIPs[holder], m.config.port)
 	default:

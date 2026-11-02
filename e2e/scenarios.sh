@@ -54,30 +54,32 @@ scenario_freeze_primary() {
 }
 
 # scenario_partition_primary cuts the primary off from the API server,
-# its peers, the operator, and its clients with a NetworkPolicy that
-# admits nothing in or out, the way a network split leaves a machine.
-# k3s enforces NetworkPolicy, and the kubelet's probes still reach the
-# pod, as they do through a real split's node-local path.
+# its peers, the operator, and its clients: the node it runs on drops
+# every packet the pod sends or receives through the pod network, the
+# way a network split leaves a machine. The kubelet's probes reach the
+# pod from the node itself, so they still answer, as they do through a
+# real split's node-local path.
 scenario_partition_primary() {
-  local old
+  local old node ip
   old=$(primary)
-  log "scenario: partition the primary $old for 45 seconds"
-  kubectl -n "$NS" apply -f - >/dev/null <<YAML
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: partition
-spec:
-  podSelector:
-    matchLabels:
-      statefulset.kubernetes.io/pod-name: $old
-  policyTypes: [Ingress, Egress]
-YAML
+  node=$(node_of "$old")
+  ip=$(kubectl -n "$NS" get pod "$old" -o jsonpath='{.status.podIP}')
+  log "scenario: partition the primary $old ($ip on $node) for 45 seconds"
+  partition "$node" "$ip" -I
   retry "a new primary" 90 primary_is_not "$old"
   sleep 15
-  kubectl -n "$NS" delete networkpolicy partition >/dev/null
+  partition "$node" "$ip" -D
   wait_ready 180
   assert_no_confirmed_write_lost "partitioning the primary"
+}
+
+# partition adds (-I) or removes (-D) the rules that drop the pod's
+# forwarded traffic on its node.
+partition() {
+  docker exec "$1" sh -c "
+    PATH=\$PATH:/bin/aux
+    iptables $3 FORWARD -s $2 -j DROP
+    iptables $3 FORWARD -d $2 -j DROP"
 }
 
 scenario_rollout() {

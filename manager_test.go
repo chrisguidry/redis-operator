@@ -21,6 +21,10 @@ type managerHarness struct {
 	port      int
 	statusAt  int
 	instances map[string]*runningManager
+	// backupDir and restoreDir stand in for a volume every instance
+	// mounts, as a ReadWriteMany claim or an NFS export is.
+	backupDir  string
+	restoreDir string
 }
 
 type runningManager struct {
@@ -32,15 +36,27 @@ type runningManager struct {
 
 func startManagerHarness(t *testing.T, engine string, instances int) *managerHarness {
 	t.Helper()
+	return startManagerHarnessOn(t, startFakeKube(t), "cache", engine, instances, nil)
+}
+
+// startManagerHarnessOn declares a Redis named name on api, with its
+// pods, and lets change edit its spec first.
+func startManagerHarnessOn(t *testing.T, api *fakeKube, name, engine string, instances int, change func(*RedisSpec)) *managerHarness {
+	t.Helper()
 	h := &managerHarness{
-		t: t, api: startFakeKube(t), name: "cache",
+		t: t, api: api, name: name,
 		port: freePort(t), statusAt: freePort(t),
 		instances: map[string]*runningManager{},
+		backupDir: t.TempDir(), restoreDir: t.TempDir(),
+	}
+	spec := RedisSpec{Engine: engine, Instances: instances, Memory: "64Mi"}
+	if change != nil {
+		change(&spec)
 	}
 	h.api.create(redisResource, Redis{
 		APIVersion: apiVersion, Kind: redisKind,
 		Metadata: ObjectMeta{Name: h.name, Namespace: testNamespace},
-		Spec:     RedisSpec{Engine: engine, Instances: instances, Memory: "64Mi"},
+		Spec:     spec,
 	})
 	for i := range instances {
 		h.api.create(podsResource, Pod{
@@ -53,9 +69,7 @@ func startManagerHarness(t *testing.T, engine string, instances int) *managerHar
 
 // ip is the loopback address of the instance named name.
 func (h *managerHarness) ip(name string) string {
-	var ordinal int
-	_, _ = fmt.Sscanf(name, h.name+"-%d", &ordinal)
-	return fmt.Sprintf("127.0.0.%d", 2+ordinal)
+	return fmt.Sprintf("127.0.0.%d", 2+ordinal(name))
 }
 
 // setTarget writes status.targetPrimary, as the operator does.
@@ -91,6 +105,7 @@ func (h *managerHarness) start(name, dir string) {
 		namespace: testNamespace, redisName: h.name, podName: name, podIP: h.ip(name),
 		port: h.port, statusPort: h.statusAt, dataDir: dir,
 		configPath: filepath.Join(dir, "server.conf"), password: testPassword,
+		backupDir: h.backupDir, restoreDir: h.restoreDir,
 		leaseDuration: 1500 * time.Millisecond, renewDeadline: time.Second,
 		retryPeriod: 200 * time.Millisecond, stepPeriod: 100 * time.Millisecond,
 		failoverTimeout: 3 * time.Second, handoverWait: 3 * time.Second,

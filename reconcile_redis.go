@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -29,7 +30,7 @@ func (c *controller) reconcile(ctx context.Context, r *Redis, w *world) error {
 		return nil
 	}
 	st := c.state(r)
-	if err := c.ensureChildren(ctx, r, st); err != nil {
+	if err := c.ensureChildren(ctx, r, st, w); err != nil {
 		return err
 	}
 	key := objectKey(r.Metadata)
@@ -45,6 +46,17 @@ func (c *controller) reconcile(ctx context.Context, r *Redis, w *world) error {
 
 	status := r.Status
 	status.Switchover = cloneSwitchover(r.Status.Switchover)
+	// The decisions change these through their pointers, so they are
+	// copies, or the change would compare equal to what was read and
+	// never be written.
+	if r.Status.Replica != nil {
+		replica := *r.Status.Replica
+		status.Replica = &replica
+	}
+	if r.Status.Rollout != nil {
+		rollout := *r.Status.Rollout
+		status.Rollout = &rollout
+	}
 	if status.TargetPrimary == "" {
 		status.TargetPrimary = instanceName(r.Metadata.Name, 0)
 	}
@@ -59,10 +71,12 @@ func (c *controller) reconcile(ctx context.Context, r *Redis, w *world) error {
 	}
 
 	d := decision{c: c, r: r, st: st, status: &status, pods: byName, holder: holder, now: now, nodes: w.nodes}
+	d.replica(ctx)
 	if r.Spec.instances() > 1 {
 		d.failover()
 		d.switchover(w.statefulSets[key].Status.UpdateRevision)
 	}
+	d.rollout(w.statefulSets[key].Status.UpdateRevision)
 	if err := c.roll(ctx, &d, w.statefulSets[key].Status.UpdateRevision); err != nil {
 		return err
 	}
@@ -98,10 +112,10 @@ func (d *decision) failover() {
 	if d.status.CurrentPrimary == "" {
 		return
 	}
-	primary := d.holder
-	if primary == "" {
-		primary = d.status.TargetPrimary
-	}
+	// The operator watches the instance it named. After a failover names
+	// the next primary, the old holder can keep its Lease until it
+	// expires, and its silence then is the failure already handled.
+	primary := d.status.TargetPrimary
 	reason := ""
 	switch {
 	case d.st.silentFor(primary, d.now) > t.failureThreshold:
@@ -214,7 +228,8 @@ func (d *decision) switchover(updateRevision string) {
 		reason = reasonPodDeleted
 	case d.nodes[primary.Spec.NodeName].Spec.Unschedulable:
 		reason = reasonNodeCordoned
-	case updateRevision != "" && primary.Metadata.Labels[revisionLabel] != updateRevision && d.othersUpdated(updateRevision):
+	case updateRevision != "" && primary.Metadata.Labels[revisionLabel] != updateRevision && d.othersUpdated(updateRevision) &&
+		(d.status.Rollout == nil || d.status.Rollout.Phase != rolloutCanary):
 		reason = reasonRollout
 	}
 	if reason == "" {
@@ -282,12 +297,30 @@ func (c *controller) roll(ctx context.Context, d *decision, updateRevision strin
 	if len(d.pods) != d.r.Spec.instances() {
 		return nil
 	}
+	// A replica that is down on an old revision rolls first and at once:
+	// it serves nothing, so deleting it costs nothing, and it is how a
+	// failed canary goes back to the image that works.
+	for _, name := range slices.Sorted(maps.Keys(d.pods)) {
+		pod := d.pods[name]
+		if name != d.holder && !pod.ready() && pod.Metadata.DeletionTimestamp == "" && pod.Metadata.Labels[revisionLabel] != updateRevision {
+			c.log.printf("%s: rolling %s, which is down, to the current revision", d.subject(), name)
+			err := c.client.delete(ctx, podsResource, pod.Metadata.Namespace, name, pod.Metadata.UID, "")
+			if err != nil && !errors.Is(err, errNotFound) {
+				return fmt.Errorf("deleting pod %s: %w", name, err)
+			}
+			return nil
+		}
+	}
 	for _, pod := range d.pods {
 		if !pod.ready() || pod.Metadata.DeletionTimestamp != "" {
 			return nil
 		}
 	}
 	names := slices.SortedFunc(maps.Keys(d.pods), func(a, b string) int { return ordinal(b) - ordinal(a) })
+	if ro := d.status.Rollout; ro != nil && ro.Phase == rolloutCanary {
+		// Until the canary holds the data, it is the only pod that rolls.
+		names = []string{ro.Canary}
+	}
 	for _, name := range names {
 		pod := d.pods[name]
 		if pod.Metadata.Labels[revisionLabel] == updateRevision {
@@ -381,34 +414,32 @@ func (c *controller) writeStatus(ctx context.Context, r *Redis, status RedisStat
 	if reflect.DeepEqual(status, r.Status) {
 		return nil
 	}
+	body, err := json.Marshal(status)
+	if err != nil {
+		return err
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return err
+	}
+	// A merge patch keeps a field it does not state, so a field that is
+	// no longer set, such as the end of a switchover, is a null.
+	for _, optional := range []string{"switchover", "replica", "rollout"} {
+		if _, set := fields[optional]; !set {
+			fields[optional] = nil
+		}
+	}
 	patch := map[string]any{
 		"metadata": map[string]any{"resourceVersion": r.Metadata.ResourceVersion},
-		"status":   status,
+		"status":   fields,
 	}
-	if status.Switchover == nil {
-		// A merge patch keeps a field it does not state, so the end of a
-		// switchover is a null.
-		patch["status"] = statusWithNullSwitchover(status)
-	}
-	err := c.client.mergePatchStatus(ctx, redisResource, r.Metadata.Namespace, r.Metadata.Name, patch, nil)
+	err = c.client.mergePatchStatus(ctx, redisResource, r.Metadata.Namespace, r.Metadata.Name, patch, nil)
 	if errors.Is(err, errConflict) {
 		// The Redis changed since this pass read it. The watch brings
 		// the change, and the next pass decides again from it.
 		return nil
 	}
 	return err
-}
-
-func statusWithNullSwitchover(status RedisStatus) map[string]any {
-	return map[string]any{
-		"observedGeneration": status.ObservedGeneration,
-		"targetPrimary":      status.TargetPrimary,
-		"currentPrimary":     status.CurrentPrimary,
-		"readyInstances":     status.ReadyInstances,
-		"instances":          status.Instances,
-		"switchover":         nil,
-		"conditions":         status.Conditions,
-	}
 }
 
 func cloneSwitchover(s *SwitchoverStatus) *SwitchoverStatus {

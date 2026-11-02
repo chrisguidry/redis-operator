@@ -72,6 +72,16 @@ func runOperator(ctx context.Context, getenv func(string) string, log io.Writer)
 		}
 		metricsPort = number
 	}
+	stages := defaultTimings
+	for name, field := range map[string]*time.Duration{"CANARY_SOAK": &stages.canarySoak, "CANARY_TIMEOUT": &stages.canaryTimeout} {
+		if text := getenv(name); text != "" {
+			d, err := time.ParseDuration(text)
+			if err != nil || d <= 0 {
+				return fmt.Errorf("%s is %q; it must be a duration such as 90s", name, text)
+			}
+			*field = d
+		}
+	}
 	client, err := inClusterKubeClient()
 	if err != nil {
 		return err
@@ -87,7 +97,9 @@ func runOperator(ctx context.Context, getenv func(string) string, log io.Writer)
 	}
 	fmt.Fprintf(log, "redis-operator %s started, metrics on %s, instance managers from %s\n", version, address, image)
 	return newElection(client, namespace, candidateIdentity(), readings, log).serve(ctx, func(ctx context.Context) error {
-		return newController(client, readings, image, time.Now, log).run(ctx)
+		c := newController(client, readings, image, time.Now, log)
+		c.timings = stages
+		return c.run(ctx)
 	})
 }
 
@@ -126,6 +138,8 @@ func runManager(ctx context.Context, getenv func(string) string, log io.Writer) 
 		statusPort:      statusPort,
 		dataDir:         "/data",
 		configPath:      filepath.Join("/manager", "server.conf"),
+		backupDir:       backupMount,
+		restoreDir:      restoreMount,
 		leaseDuration:   primaryLeaseDuration,
 		renewDeadline:   primaryRenewDeadline,
 		retryPeriod:     primaryRetryPeriod,

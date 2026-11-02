@@ -20,6 +20,9 @@ document to `completed/` and states what the tests measured.
 
 1. [High availability](01-high-availability.md): one primary and its replicas, failover, and
    switchover before a node drains.
-2. Backups to object storage, and restore into a new deployment.
-3. Adoption: replicate from an existing Redis or Valkey, then promote.
-4. Upgrades and downgrades, staged so they lose no data.
+2. [Backups](02-backups.md) to object storage or a volume, and restore
+   into a new deployment.
+3. [Adoption](03-adoption.md): replicate from an existing Redis or
+   Valkey, then promote.
+4. [Upgrades and downgrades](04-upgrades.md), staged so they lose no
+   data.

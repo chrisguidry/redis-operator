@@ -46,3 +46,11 @@ func TestInstallCopiesTheBinary(t *testing.T) {
 	mustSucceed(t, err)
 	mustMatch(t, info.Mode().Perm(), os.FileMode(0o755))
 }
+
+func TestTheOperatorRefusesABadCanaryTimeout(t *testing.T) {
+	env := map[string]string{"POD_NAMESPACE": "redis-operator", "POD_NAME": "redis-operator-0", "CANARY_TIMEOUT": "soon"}
+
+	err := run(context.Background(), nil, func(name string) string { return env[name] }, &syncBuffer{})
+
+	mustMatch(t, err.Error(), `CANARY_TIMEOUT is "soon"; it must be a duration such as 90s`)
+}
