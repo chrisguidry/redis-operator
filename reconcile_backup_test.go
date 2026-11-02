@@ -57,6 +57,72 @@ func TestABackupStartsOnTheReplicaWithTheMostData(t *testing.T) {
 	mustMatch(t, len(h.backup("nightly").Metadata.Finalizers), 1)
 }
 
+// withBackupVolume names a claim as the Redis's backup store.
+func (h *harness) withBackupVolume(claim string) {
+	h.t.Helper()
+	h.api.update(redisResource, testNamespace, h.name, func(object map[string]any) {
+		object["spec"].(map[string]any)["backup"] = toObject(h.t, BackupStore{Volume: &BackupVolume{ClaimName: claim}})
+	})
+}
+
+// mountBackups gives the pod the backup volume, as the pod template
+// does once spec.backup.volume is set and the pod is made again.
+func (h *harness) mountBackups(name, claim string) {
+	h.t.Helper()
+	h.api.update(podsResource, testNamespace, name, func(object map[string]any) {
+		spec := object["spec"].(map[string]any)
+		spec["containers"] = []any{map[string]any{"name": "redis", "volumeMounts": []any{
+			map[string]any{"name": "backups", "mountPath": backupMount},
+		}}}
+		spec["volumes"] = []any{map[string]any{"name": "backups", "persistentVolumeClaim": map[string]any{"claimName": claim}}}
+	})
+}
+
+func TestABackupToAVolumeSkipsAReplicaThatDoesNotMountIt(t *testing.T) {
+	h := startHarness(t, 2)
+	h.steady("cache-0", 2)
+	h.withBackupVolume("backups")
+	h.mountBackups("cache-0", "backups")
+	h.newBackup("nightly")
+
+	h.pass()
+	h.pass()
+
+	mustMatch(t, h.backup("nightly").Status.Instance, "cache-0")
+}
+
+func TestABackupToAVolumeWaitsWhileNoInstanceMountsIt(t *testing.T) {
+	h := startHarness(t, 2)
+	h.steady("cache-0", 2)
+	h.withBackupVolume("backups")
+	h.newBackup("nightly")
+
+	h.pass()
+	h.pass()
+	mustMatch(t, h.backup("nightly").Status.Phase, "")
+
+	h.mountBackups("cache-1", "backups")
+	h.pass()
+
+	status := h.backup("nightly").Status
+	mustMatch(t, status.Phase, backupRunning)
+	mustMatch(t, status.Instance, "cache-1")
+}
+
+func TestABackupToAVolumeSkipsAnInstanceThatMountsAnotherClaim(t *testing.T) {
+	h := startHarness(t, 2)
+	h.steady("cache-0", 2)
+	h.withBackupVolume("backups")
+	h.mountBackups("cache-1", "old-backups")
+	h.mountBackups("cache-0", "backups")
+	h.newBackup("nightly")
+
+	h.pass()
+	h.pass()
+
+	mustMatch(t, h.backup("nightly").Status.Instance, "cache-0")
+}
+
 func TestABackupOfASingleInstanceRunsOnThePrimary(t *testing.T) {
 	h := startHarness(t, 1)
 	h.steady("cache-0", 1)

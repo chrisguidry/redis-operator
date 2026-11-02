@@ -15,7 +15,29 @@ type Pod struct {
 }
 
 type PodSpec struct {
-	NodeName string `json:"nodeName,omitempty"`
+	NodeName   string         `json:"nodeName,omitempty"`
+	Containers []PodContainer `json:"containers,omitempty"`
+	Volumes    []PodVolume    `json:"volumes,omitempty"`
+}
+
+// PodContainer and PodVolume carry the parts of a pod's spec that tell
+// which template it was made from.
+type PodContainer struct {
+	Name         string        `json:"name"`
+	VolumeMounts []VolumeMount `json:"volumeMounts,omitempty"`
+}
+
+type VolumeMount struct {
+	Name      string `json:"name"`
+	MountPath string `json:"mountPath"`
+}
+
+type PodVolume struct {
+	Name                  string `json:"name"`
+	PersistentVolumeClaim *struct {
+		ClaimName string `json:"claimName"`
+	} `json:"persistentVolumeClaim,omitempty"`
+	NFS *NFSVolume `json:"nfs,omitempty"`
 }
 
 type PodStatus struct {

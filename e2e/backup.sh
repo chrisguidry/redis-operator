@@ -111,14 +111,26 @@ YAML
 }
 
 restored_ready() {
-  [ "$(kubectl -n "$NS" get redis restored -o jsonpath='{.status.readyInstances}')" = 2 ]
+  [ "$(kubectl -n "$NS" get redis "${1:-restored}" -o jsonpath='{.status.readyInstances}')" = 2 ]
 }
 
+# restored_counter prints the restored Redis's counter. The Service can
+# lag the Redis's readiness by a moment, so it retries a refused read,
+# and it says why when the read never works.
 restored_counter() {
-  local cli=redis-cli password
+  local name=${1:-restored} cli=redis-cli password value deadline=$((SECONDS + 60))
   [ "$ENGINE" = valkey ] && cli=valkey-cli
-  password=$(kubectl -n "$NS" get secret restored-app -o jsonpath='{.data.password}' | base64 -d)
-  kubectl -n "$NS" exec writer -- env REDISCLI_AUTH="$password" "$cli" -h restored-rw GET counter 2>/dev/null
+  password=$(kubectl -n "$NS" get secret "$name-app" -o jsonpath='{.data.password}' | base64 -d) ||
+    die "could not read the restored Redis's password"
+  while true; do
+    if value=$(kubectl -n "$NS" exec writer -- env REDISCLI_AUTH="$password" "$cli" -h "$name-rw" GET counter 2>&1) &&
+      [[ "$value" =~ ^[0-9]+$ ]]; then
+      echo "$value"
+      return 0
+    fi
+    (( SECONDS < deadline )) || die "reading the restored counter failed: $value"
+    sleep 2
+  done
 }
 
 # scenario_backup_restore_volume repeats the backup and the restore with
@@ -129,12 +141,10 @@ scenario_backup_restore_volume() {
   create_backup_volume
   kubectl -n "$NS" patch redis cache --type=merge -p \
     '{"spec":{"backup":{"destination":null,"endpoint":null,"credentials":null,"volume":{"claimName":"backups"}}}}' >/dev/null
-  # Adding the volume rolls the pods. A Backup started halfway through
-  # could pick a pod that has no /backups yet and fail.
-  retry "every pod mounting the volume" 300 all_pods_mount_volume
-  wait_ready 180
+  # The Backup is made while the pods roll: the operator waits for a
+  # pod that mounts the volume.
   local before key
-  before=$(max_confirmed)
+  before=$(max_confirmed) || die "could not read the writer's confirmed values"
   kubectl -n "$NS" apply -f - >/dev/null <<YAML
 apiVersion: redis.guid.foo/v1alpha1
 kind: Backup
@@ -144,16 +154,15 @@ spec:
   redis: cache
 YAML
   retry "the backup completing" 180 backup_completed volume-under-load
-  key=$(backup_key volume-under-load)
+  key=$(backup_key volume-under-load) || die "could not read the backup's key"
   [ "$(kubectl -n "$NS" get backup volume-under-load -o jsonpath='{.status.size}')" -gt 0 ] ||
     die "the backup to the volume completed with no size"
   retry "the backup's file on the volume" 30 volume_has_file "$key"
-  kubectl -n "$NS" delete redis restored --wait=true --timeout=120s >/dev/null 2>&1 || true
   kubectl -n "$NS" apply -f - >/dev/null <<YAML
 apiVersion: redis.guid.foo/v1alpha1
 kind: Redis
 metadata:
-  name: restored
+  name: restored-volume
 spec:
   engine: $ENGINE
   image: $SERVER_IMAGE
@@ -163,12 +172,12 @@ spec:
     recovery:
       backup: volume-under-load
 YAML
-  retry "the restored Redis being ready" 240 restored_ready
+  retry "the restored Redis being ready" 240 restored_ready restored-volume
   local restored
-  restored=$(restored_counter)
+  restored=$(restored_counter restored-volume)
   log "restoring from the volume: the restored counter is $restored, and $before was confirmed before the backup"
   [ "$restored" -ge "$before" ] || die "the restore from the volume lost confirmed writes: $restored is below $before"
-  kubectl -n "$NS" delete redis restored --wait=true --timeout=120s >/dev/null
+  kubectl -n "$NS" delete redis restored-volume --wait=true --timeout=120s >/dev/null
   kubectl -n "$NS" delete backup volume-under-load --wait=true --timeout=60s >/dev/null
   retry "the backup's file leaving the volume" 30 volume_lacks_file "$key"
 
@@ -228,14 +237,6 @@ spec:
   volumeName: backups-$RUN_ID
   resources: {requests: {storage: 1Gi}}
 YAML
-}
-
-all_pods_mount_volume() {
-  local mounts
-  mounts=$(kubectl -n "$NS" get pods -l redis.guid.foo/cluster=cache \
-    -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.containers[0].volumeMounts[*].mountPath}{"\n"}{end}')
-  echo "$mounts"
-  [ "$(echo "$mounts" | grep -c ' .*/backups')" = 3 ]
 }
 
 backup_key() {

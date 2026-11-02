@@ -71,7 +71,7 @@ func (c *controller) reconcileBackup(ctx context.Context, backup Backup, byRedis
 		if r.Spec.Backup == nil {
 			return c.failBackup(ctx, backup, fmt.Sprintf("redis %s names no backup store in spec.backup", backup.Spec.Redis))
 		}
-		return c.startBackup(ctx, backup, r)
+		return c.startBackup(ctx, backup, r, pods[meta.Namespace+"/"+backup.Spec.Redis])
 	case backupRunning:
 		started, _ := time.Parse(time.RFC3339, backup.Status.StartedAt)
 		if c.now().Sub(started) > backupDeadline {
@@ -107,8 +107,17 @@ func instanceLost(backup Backup, started time.Time, pods []Pod) string {
 // startBackup chooses the instance and the key, and marks the Backup
 // running. A replica takes the snapshot, so the fork is not the
 // primary's, unless no replica follows the primary.
-func (c *controller) startBackup(ctx context.Context, backup Backup, r Redis) error {
+func (c *controller) startBackup(ctx context.Context, backup Backup, r Redis, pods []Pod) error {
 	st := c.state(&r)
+	// Adding a volume to spec.backup rolls the pods, and a pod that still
+	// has the old template has no mount to write the snapshot to. Such
+	// a pod cannot take the Backup, so the choice waits for one that can.
+	eligible := map[string]bool{}
+	for _, pod := range pods {
+		if r.Spec.Backup.Volume == nil || mountsBackupVolume(pod, *r.Spec.Backup.Volume) {
+			eligible[pod.Metadata.Name] = true
+		}
+	}
 	instance := ""
 	var bestOffset int64 = -1
 	// Ties go to the lowest ordinal, so the choice does not hang on the
@@ -116,7 +125,7 @@ func (c *controller) startBackup(ctx context.Context, backup Backup, r Redis) er
 	names := slices.SortedFunc(maps.Keys(st.reports), func(a, b string) int { return ordinal(a) - ordinal(b) })
 	for _, name := range names {
 		report := st.reports[name]
-		if _, fresh := st.fresh(name, c.now(), 2*c.timings.backstop); !fresh || report.Stopping {
+		if _, fresh := st.fresh(name, c.now(), 2*c.timings.backstop); !fresh || report.Stopping || !eligible[name] {
 			continue
 		}
 		if report.Role == reportReplica && report.LinkUp && report.Offset > bestOffset {
@@ -124,12 +133,13 @@ func (c *controller) startBackup(ctx context.Context, backup Backup, r Redis) er
 		}
 	}
 	if instance == "" && r.Status.CurrentPrimary != "" {
-		if _, fresh := st.fresh(r.Status.CurrentPrimary, c.now(), 2*c.timings.backstop); fresh {
+		if _, fresh := st.fresh(r.Status.CurrentPrimary, c.now(), 2*c.timings.backstop); fresh && eligible[r.Status.CurrentPrimary] {
 			instance = r.Status.CurrentPrimary
 		}
 	}
 	if instance == "" {
-		// No instance answers yet. The next pass tries again.
+		// No instance answers, or none has the store mounted yet. The next
+		// pass tries again.
 		return nil
 	}
 	store := *r.Spec.Backup
@@ -159,6 +169,23 @@ func (c *controller) startBackup(ctx context.Context, backup Backup, r Redis) er
 		c.events.normal(referenceTo(backupKind, backup.Metadata), "Started", fmt.Sprintf("%s takes the snapshot, to %s", instance, key))
 	}
 	return err
+}
+
+// mountsBackupVolume says whether the pod mounts v where the instance
+// manager writes backups.
+func mountsBackupVolume(pod Pod, v BackupVolume) bool {
+	mounted := slices.ContainsFunc(pod.Spec.Containers, func(container PodContainer) bool {
+		return slices.Contains(container.VolumeMounts, VolumeMount{Name: "backups", MountPath: backupMount})
+	})
+	return mounted && slices.ContainsFunc(pod.Spec.Volumes, func(volume PodVolume) bool {
+		if volume.Name != "backups" {
+			return false
+		}
+		if v.NFS != nil {
+			return volume.NFS != nil && *volume.NFS == *v.NFS
+		}
+		return volume.PersistentVolumeClaim != nil && volume.PersistentVolumeClaim.ClaimName == v.ClaimName
+	})
 }
 
 func (c *controller) failBackup(ctx context.Context, backup Backup, reason string) error {

@@ -107,8 +107,11 @@ them by name, through a Role that names the Secrets they may read and no others.
    `Redis` does not exist or has no `spec.backup`. Otherwise it picks
    the instance: the replica that answered the last poll, is not
    stopping, has its link up, and has the highest offset, or the
-   primary when there is no such replica. With no instance answering, it
-   waits for the next pass. It writes `phase: Running`, the instance,
+   primary when there is no such replica. For a volume store it
+   considers only pods that mount that volume at `/backups`, because
+   a pod that the roll after adding `spec.backup.volume` has not yet
+   replaced has no mount. With no instance answering, or none
+   qualifying, it waits for the next pass. It writes `phase: Running`, the instance,
    the store, the object key, and `startedAt`.
 2. That instance's manager sees a running `Backup` that names it, once
    it holds data, so a replica that has not synced never uploads an

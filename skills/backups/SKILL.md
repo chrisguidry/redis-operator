@@ -129,7 +129,9 @@ The instance runs `BGSAVE`, waits for it to finish, and uploads
 
 A `Backup` fails at once when its `Redis` does not exist or has no
 `spec.backup`. A `Backup` with an empty phase waits while no instance
-answers the operator.
+answers the operator. For a volume store it also waits until a pod
+mounts the volume, so a `Backup` made while the roll after adding
+`spec.backup.volume` runs starts once a replaced pod is ready.
 
 ## Schedule backups
 
