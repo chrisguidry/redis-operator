@@ -1,0 +1,99 @@
+# The operator's permissions. A Redis can be in any namespace, so these
+# are in a ClusterRole. The Lease for leader election is in a Role in
+# the operator's namespace.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: redis-operator
+rules:
+  - apiGroups: [redis.guid.foo]
+    resources: [redis]
+    verbs: [get, list, watch]
+  # The decision, status.targetPrimary, is written with a merge patch
+  # that states the resourceVersion read.
+  - apiGroups: [redis.guid.foo]
+    resources: [redis/status]
+    verbs: [patch]
+  # The operator labels each pod with its role, and deletes the pod that
+  # rolls next.
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch, patch, delete]
+  # The primary Lease of each Redis, which its instance managers write.
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [list, watch]
+  # A cordoned node starts a switchover off its primary.
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [list, watch]
+  # The children of each Redis are written with server-side apply, which
+  # the API server authorizes as a create for an object that does not
+  # exist yet.
+  - apiGroups: [apps]
+    resources: [statefulsets]
+    verbs: [list, watch, create, patch]
+  - apiGroups: [""]
+    resources: [services, serviceaccounts]
+    verbs: [create, patch]
+  - apiGroups: [policy]
+    resources: [poddisruptionbudgets]
+    verbs: [create, patch]
+  # The Role a Redis's instance managers run under. Kubernetes lets the
+  # operator grant only what it holds, which is everything that Role
+  # names.
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [roles, rolebindings]
+    verbs: [create, patch]
+  # The connection Secret is created once, and read to learn whether it
+  # exists. The operator never lists Secrets.
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, create]
+  # What the Role for the instance managers grants, which the operator
+  # must hold to grant it.
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, create, patch, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: redis-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: redis-operator
+# The subject states no namespace. kustomize fills in the namespace of
+# the kustomization that takes this base.
+subjects:
+  - kind: ServiceAccount
+    name: redis-operator
+---
+# The replicas elect a leader through one Lease in the operator's own
+# namespace. The operator also reads its own pod, to learn the image it
+# runs instance managers from.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: redis-operator
+rules:
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, create, patch]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: redis-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: redis-operator
+subjects:
+  - kind: ServiceAccount
+    name: redis-operator

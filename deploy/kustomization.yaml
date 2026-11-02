@@ -1,0 +1,35 @@
+# The kustomize base for redis-operator.
+#
+# Take this base through your own GitOps, with your own patches, or read
+# it and write your own manifests. Pin it to a release tag, the same
+# version as the image:
+#
+#   resources:
+#     - https://github.com/chrisguidry/redis-operator//deploy?ref=<version>
+#   images:
+#     - name: ghcr.io/chrisguidry/redis-operator
+#       newTag: <version>
+#
+# The base does not create a namespace. Whoever runs the cluster decides
+# which namespace the operator runs in, and which object owns it, so a
+# kustomization that removes the operator never deletes a namespace that
+# other workloads share. Create the namespace first, or set your own:
+# the ServiceAccount and the ClusterRoleBinding's subject follow it.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: redis-operator
+
+resources:
+  - redis-crd.yaml
+  - rbac.yaml
+  - operator.yaml
+
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/name: redis-operator
+
+images:
+  - name: ghcr.io/chrisguidry/redis-operator
+    newTag: latest

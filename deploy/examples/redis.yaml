@@ -1,0 +1,13 @@
+# A primary and two replicas of Valkey, with a volume each. Clients
+# connect to cache-rw for writes and cache-ro for reads, with the
+# password and the addresses in the Secret cache-app.
+apiVersion: redis.guid.foo/v1alpha1
+kind: Redis
+metadata:
+  name: cache
+spec:
+  engine: valkey
+  instances: 3
+  memory: 512Mi
+  storage:
+    size: 2Gi

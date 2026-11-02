@@ -10,12 +10,27 @@ source of each fact it depends on. Later plans are numbered after it.
 
 The operator is one flat `package main`, with files grouped by prefix.
 It talks to the Kubernetes API over HTTP with no client-go and no
-controller framework.
+controller framework. The one binary is both the operator and the
+instance manager that runs in every Redis pod.
+
+- `api_*.go`: the Go types of the resources it reads and writes.
+  `deploy/redis-crd.yaml` is written by hand, and `api_redis_crd_test.go`
+  checks it.
+- `kube_*.go`, `leader.go`: the Kubernetes API client, watches, and the
+  operator's leader election.
+- `reconcile*.go`, `children.go`: the operator's loop and decisions.
+- `manager*.go`: the instance manager, and `redis_conn.go` its RESP
+  client.
 
 ## Tests
 
 Write the failing test first. Tests run against fakes of the real
 servers and against real Redis and Valkey processes. Do not add mocks.
+
+`make test` copies `redis-server` and `valkey-server` out of the images
+the operator runs by default into `.servers/`, which needs Docker, and
+puts them on the tests' PATH. To run `go test` by hand, run
+`make servers` once and add `.servers` to PATH.
 
 ## Privacy
 

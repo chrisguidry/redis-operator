@@ -21,8 +21,28 @@ COVERAGE_TOOLCHAIN := go1.26.7
 # test-go fails on the first one.
 UNTESTED_PACKAGES := go list -f '{{if not (or .TestGoFiles .XTestGoFiles)}}{{.ImportPath}}{{end}}' ./...
 
+# The tests run real redis-server and valkey-server processes. This
+# copies both binaries out of the images the operator runs by default,
+# so the tests run the same servers a cluster does. It needs Docker.
+SERVERS := $(CURDIR)/.servers
+DEFAULT_IMAGES := $(shell sed -n 's/^[[:space:]]*engine\(Redis\|Valkey\): *"\(.*\)",$$/\2/p' api_redis.go)
+export PATH := $(SERVERS):$(PATH)
+
+$(SERVERS)/.images: api_redis.go
+	mkdir -p $(SERVERS)
+	for image in $(DEFAULT_IMAGES); do \
+	  case $$image in valkey*) binary=valkey-server ;; *) binary=redis-server ;; esac; \
+	  container=$$(docker create $$image) && \
+	  docker cp -L $$container:/usr/local/bin/$$binary $(SERVERS)/$$binary && \
+	  docker rm $$container >/dev/null || exit 1; \
+	done
+	echo $(DEFAULT_IMAGES) > $@
+
+.PHONY: servers
+servers: $(SERVERS)/.images
+
 .PHONY: test-go
-test-go:
+test-go: servers
 	test -z "$$(gofmt -l .)" || { gofmt -l .; exit 1; }
 	test -z "$$($(UNTESTED_PACKAGES))" || { echo 'packages with no test file:'; $(UNTESTED_PACKAGES); exit 1; }
 	go vet ./...

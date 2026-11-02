@@ -4,3 +4,4 @@
 # on every run.
 /coverage.out
 /coverage.html
+/.servers/

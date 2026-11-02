@@ -1,22 +1,48 @@
 package main
 
 import (
-	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
-func TestRunReportsItsVersionAndStopsWithItsContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	var out bytes.Buffer
+func noEnv(string) string { return "" }
 
-	err := run(ctx, &out)
+func TestVersionReportsTheBuild(t *testing.T) {
+	var log syncBuffer
 
-	if err != nil {
-		t.Fatalf("run returned %v", err)
-	}
-	if got, want := out.String(), "redis-operator dev\n"; got != want {
-		t.Fatalf("run wrote %q, want %q", got, want)
-	}
+	err := run(context.Background(), []string{"version"}, noEnv, &log)
+
+	mustSucceed(t, err)
+	mustMatch(t, log.lines()[0], "redis-operator dev")
+}
+
+func TestAnUnknownCommandIsRefused(t *testing.T) {
+	err := run(context.Background(), []string{"bogus"}, noEnv, &syncBuffer{})
+
+	mustMatch(t, err.Error(), `unknown command "bogus": the commands are operator, manager, install, and version`)
+}
+
+func TestTheOperatorNeedsItsPod(t *testing.T) {
+	err := run(context.Background(), nil, noEnv, &syncBuffer{})
+
+	mustMatch(t, err.Error(), "POD_NAMESPACE and POD_NAME must be set; the operator reads its own pod to learn its image")
+}
+
+func TestTheManagerNeedsItsSettings(t *testing.T) {
+	err := run(context.Background(), []string{"manager"}, noEnv, &syncBuffer{})
+
+	mustMatch(t, err != nil, true)
+}
+
+func TestInstallCopiesTheBinary(t *testing.T) {
+	dir := t.TempDir()
+
+	err := run(context.Background(), []string{"install", dir}, noEnv, &syncBuffer{})
+
+	mustSucceed(t, err)
+	info, err := os.Stat(filepath.Join(dir, "redis-operator"))
+	mustSucceed(t, err)
+	mustMatch(t, info.Mode().Perm(), os.FileMode(0o755))
 }

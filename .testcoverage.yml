@@ -9,6 +9,7 @@
 profile: coverage.out
 
 threshold:
-  # go test never calls main(), so its statements never count as
-  # covered.
-  total: 35
+  # go test never calls main(), and the in-cluster start of the
+  # operator and the instance manager runs only in a pod, so those
+  # statements never count as covered.
+  total: 80

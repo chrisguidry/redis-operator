@@ -34,3 +34,6 @@ jobs:
       # coverage gate pins a toolchain, and .testcoverage.yml holds the
       # floor.
       - run: make test-go
+
+      # The kustomize base must build as a consumer takes it.
+      - run: kubectl kustomize deploy > /dev/null

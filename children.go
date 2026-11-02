@@ -1,0 +1,241 @@
+package main
+
+// The objects the operator makes for each Redis, as the server-side
+// apply bodies it sends. Every object is owned by the Redis, so the
+// garbage collector deletes them with it, and every name starts with
+// the Redis's name.
+
+import (
+	"fmt"
+	"strconv"
+)
+
+var (
+	serviceAccountsResource = kubeResource{"", "v1", "serviceaccounts"}
+	rolesResource           = kubeResource{"rbac.authorization.k8s.io", "v1", "roles"}
+	roleBindingsResource    = kubeResource{"rbac.authorization.k8s.io", "v1", "rolebindings"}
+	servicesResource        = kubeResource{"", "v1", "services"}
+	secretsResource         = kubeResource{"", "v1", "secrets"}
+	budgetsResource         = kubeResource{"policy", "v1", "poddisruptionbudgets"}
+)
+
+// child is one object to apply: where it goes, and its body.
+type child struct {
+	resource kubeResource
+	name     string
+	body     map[string]any
+}
+
+func ownerOf(r *Redis) OwnerReference {
+	return OwnerReference{
+		APIVersion: apiVersion, Kind: redisKind, Name: r.Metadata.Name, UID: r.Metadata.UID,
+		Controller: true, BlockOwnerDeletion: true,
+	}
+}
+
+func childMeta(r *Redis, name string, labels map[string]string) map[string]any {
+	all := map[string]string{clusterLabel: r.Metadata.Name}
+	for key, value := range labels {
+		all[key] = value
+	}
+	return map[string]any{
+		"name":            name,
+		"namespace":       r.Metadata.Namespace,
+		"labels":          all,
+		"ownerReferences": []OwnerReference{ownerOf(r)},
+	}
+}
+
+func secretName(redis string) string { return redis + "-app" }
+
+// children lists every object for r except its Secret, which the
+// operator creates once and never rewrites, because it holds the
+// password.
+func children(r *Redis, operatorImage string) []child {
+	name := r.Metadata.Name
+	list := []child{
+		{serviceAccountsResource, name, map[string]any{
+			"apiVersion": "v1", "kind": "ServiceAccount", "metadata": childMeta(r, name, nil),
+		}},
+		{rolesResource, name, map[string]any{
+			"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role", "metadata": childMeta(r, name, nil),
+			// What an instance manager reads and writes: its Redis, the
+			// primary Lease, and the pods of its Redis, whose IPs it
+			// follows and whose annotation asks for a switchover.
+			"rules": []map[string]any{
+				{"apiGroups": []string{apiGroup}, "resources": []string{"redis"}, "resourceNames": []string{name}, "verbs": []string{"get"}},
+				{"apiGroups": []string{"coordination.k8s.io"}, "resources": []string{"leases"}, "verbs": []string{"create"}},
+				{"apiGroups": []string{"coordination.k8s.io"}, "resources": []string{"leases"}, "resourceNames": []string{primaryLeaseName(name)}, "verbs": []string{"get", "patch", "update"}},
+				{"apiGroups": []string{""}, "resources": []string{"pods"}, "verbs": []string{"get", "list", "patch"}},
+			},
+		}},
+		{roleBindingsResource, name, map[string]any{
+			"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding", "metadata": childMeta(r, name, nil),
+			"roleRef":  map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": name},
+			"subjects": []map[string]any{{"kind": "ServiceAccount", "name": name, "namespace": r.Metadata.Namespace}},
+		}},
+		service(r, name+"-rw", map[string]string{clusterLabel: name, roleLabel: rolePrimary}, false),
+		service(r, name+"-ro", map[string]string{clusterLabel: name, roleLabel: roleReplica}, false),
+		service(r, name+"-nodes", map[string]string{clusterLabel: name}, true),
+		{budgetsResource, name + "-replicas", map[string]any{
+			"apiVersion": "policy/v1", "kind": "PodDisruptionBudget", "metadata": childMeta(r, name+"-replicas", nil),
+			"spec": map[string]any{
+				"maxUnavailable": 1,
+				"selector":       map[string]any{"matchLabels": map[string]string{clusterLabel: name, roleLabel: roleReplica}},
+			},
+		}},
+		statefulSet(r, operatorImage),
+	}
+	if r.Spec.instances() > 1 {
+		// An eviction cannot take the primary. The operator switches over
+		// when the primary's node is cordoned, and the old primary is
+		// then a replica that this budget does not cover.
+		list = append(list, child{budgetsResource, name + "-primary", map[string]any{
+			"apiVersion": "policy/v1", "kind": "PodDisruptionBudget", "metadata": childMeta(r, name+"-primary", nil),
+			"spec": map[string]any{
+				"minAvailable": 1,
+				"selector":     map[string]any{"matchLabels": map[string]string{clusterLabel: name, roleLabel: rolePrimary}},
+			},
+		}})
+	}
+	return list
+}
+
+func service(r *Redis, name string, selector map[string]string, headless bool) child {
+	spec := map[string]any{
+		"selector": selector,
+		"ports":    []map[string]any{{"name": "redis", "port": serverPort, "targetPort": "redis"}},
+	}
+	if headless {
+		spec["clusterIP"] = "None"
+		spec["publishNotReadyAddresses"] = true
+	}
+	return child{servicesResource, name, map[string]any{
+		"apiVersion": "v1", "kind": "Service", "metadata": childMeta(r, name, nil), "spec": spec,
+	}}
+}
+
+func statefulSet(r *Redis, operatorImage string) child {
+	name := r.Metadata.Name
+	podLabels := map[string]string{clusterLabel: name}
+	env := []map[string]any{
+		{"name": "POD_NAME", "valueFrom": map[string]any{"fieldRef": map[string]any{"fieldPath": "metadata.name"}}},
+		{"name": "POD_NAMESPACE", "valueFrom": map[string]any{"fieldRef": map[string]any{"fieldPath": "metadata.namespace"}}},
+		{"name": "POD_IP", "valueFrom": map[string]any{"fieldRef": map[string]any{"fieldPath": "status.podIP"}}},
+		{"name": "REDIS_NAME", "value": name},
+		{"name": "REDIS_PASSWORD", "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": secretName(name), "key": "password"}}},
+	}
+	resources := map[string]any{
+		"requests": map[string]any{"memory": r.Spec.memory()},
+		"limits":   map[string]any{"memory": r.Spec.memory()},
+	}
+	if r.Spec.CPU != "" {
+		resources["requests"].(map[string]any)["cpu"] = r.Spec.CPU
+	}
+	probe := func(path string, period, failures int) map[string]any {
+		return map[string]any{
+			"httpGet":          map[string]any{"path": path, "port": "status"},
+			"periodSeconds":    period,
+			"failureThreshold": failures,
+		}
+	}
+	podSpec := map[string]any{
+		"serviceAccountName": name,
+		// A primary that is deleted waits for its switchover inside this
+		// grace period, and then stops its server.
+		"terminationGracePeriodSeconds": 30,
+		// Both engines' images run their server as uid 999, and a
+		// volume's files must belong to it.
+		"securityContext": map[string]any{"runAsNonRoot": true, "runAsUser": 999, "runAsGroup": 999, "fsGroup": 999},
+		"affinity": map[string]any{"podAntiAffinity": map[string]any{
+			"requiredDuringSchedulingIgnoredDuringExecution": []map[string]any{{
+				"labelSelector": map[string]any{"matchLabels": podLabels},
+				"topologyKey":   "kubernetes.io/hostname",
+			}},
+		}},
+		"initContainers": []map[string]any{{
+			"name":         "install-manager",
+			"image":        operatorImage,
+			"args":         []string{"install", "/manager"},
+			"volumeMounts": []map[string]any{{"name": "manager", "mountPath": "/manager"}},
+		}},
+		"containers": []map[string]any{{
+			"name":           "redis",
+			"image":          r.Spec.image(),
+			"command":        []string{"/manager/redis-operator", "manager"},
+			"env":            env,
+			"ports":          []map[string]any{{"name": "redis", "containerPort": serverPort}, {"name": "status", "containerPort": statusPort}},
+			"resources":      resources,
+			"readinessProbe": probe("/ready", 2, 1),
+			"livenessProbe":  probe("/healthz", 10, 3),
+			"volumeMounts": []map[string]any{
+				{"name": "manager", "mountPath": "/manager"},
+				{"name": "data", "mountPath": "/data"},
+			},
+		}},
+		"volumes": volumes(r),
+	}
+	if len(r.Spec.NodeSelector) > 0 {
+		podSpec["nodeSelector"] = r.Spec.NodeSelector
+	}
+	if len(r.Spec.Tolerations) > 0 {
+		podSpec["tolerations"] = r.Spec.Tolerations
+	}
+	if r.Spec.PriorityClassName != "" {
+		podSpec["priorityClassName"] = r.Spec.PriorityClassName
+	}
+	spec := map[string]any{
+		"replicas":    r.Spec.instances(),
+		"serviceName": name + "-nodes",
+		// The operator decides which pod restarts and when, so a change
+		// rolls the replicas, switches over, then rolls the old primary.
+		"updateStrategy":      map[string]any{"type": "OnDelete"},
+		"podManagementPolicy": "Parallel",
+		"selector":            map[string]any{"matchLabels": podLabels},
+		"template": map[string]any{
+			"metadata": map[string]any{"labels": podLabels},
+			"spec":     podSpec,
+		},
+	}
+	if r.Spec.persistent() {
+		claim := map[string]any{
+			"accessModes": []string{"ReadWriteOnce"},
+			"resources":   map[string]any{"requests": map[string]any{"storage": r.Spec.Storage.Size}},
+		}
+		if r.Spec.Storage.StorageClassName != "" {
+			claim["storageClassName"] = r.Spec.Storage.StorageClassName
+		}
+		spec["volumeClaimTemplates"] = []map[string]any{{"metadata": map[string]any{"name": "data"}, "spec": claim}}
+	}
+	return child{statefulSetsResource, name, map[string]any{
+		"apiVersion": "apps/v1", "kind": "StatefulSet", "metadata": childMeta(r, name, nil), "spec": spec,
+	}}
+}
+
+func volumes(r *Redis) []map[string]any {
+	list := []map[string]any{{"name": "manager", "emptyDir": map[string]any{}}}
+	if !r.Spec.persistent() {
+		list = append(list, map[string]any{"name": "data", "emptyDir": map[string]any{}})
+	}
+	return list
+}
+
+// secret is the connection Secret: the password, which the operator
+// makes once, and the addresses a client needs.
+func secret(r *Redis, password string) map[string]any {
+	name := r.Metadata.Name
+	host := fmt.Sprintf("%s-rw.%s.svc", name, r.Metadata.Namespace)
+	readHost := fmt.Sprintf("%s-ro.%s.svc", name, r.Metadata.Namespace)
+	port := strconv.Itoa(serverPort)
+	return map[string]any{
+		"apiVersion": "v1", "kind": "Secret", "metadata": childMeta(r, secretName(name), nil),
+		"type": "Opaque",
+		"stringData": map[string]string{
+			"password": password,
+			"host":     host,
+			"port":     port,
+			"uri":      fmt.Sprintf("redis://:%s@%s:%s", password, host, port),
+			"ro-uri":   fmt.Sprintf("redis://:%s@%s:%s", password, readHost, port),
+		},
+	}
+}

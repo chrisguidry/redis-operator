@@ -1,0 +1,73 @@
+# The operator: one Deployment with two replicas. One replica leads and
+# does the work, and the other waits as a standby. The leader holds a
+# Lease in this namespace. When the leader stops, it releases the Lease
+# and the standby takes over within a retry period. When the leader's
+# node fails, the standby takes over once the Lease has gone a lease
+# duration without a renewal.
+#
+# The operator keeps no state. Each Redis's status holds the decision
+# it acts on, so a new leader starts from what the API server holds.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: redis-operator
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-operator
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: redis-operator
+  template:
+    metadata:
+      labels:
+        app: redis-operator
+    spec:
+      serviceAccountName: redis-operator
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app: redis-operator
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        # The name matters: the operator reads this container's image
+        # and runs every Redis pod's instance manager from it.
+        - name: operator
+          image: ghcr.io/chrisguidry/redis-operator:latest
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          ports:
+            - name: metrics
+              containerPort: 9200
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
