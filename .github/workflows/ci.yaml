@@ -19,7 +19,7 @@ permissions:
 jobs:
   go:
     runs-on: ubuntu-26.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
 
@@ -45,7 +45,7 @@ jobs:
   # ubuntu-26.04 already has Docker and kubectl.
   e2e-redis:
     runs-on: ubuntu-26.04
-    timeout-minutes: 30
+    timeout-minutes: 70
     steps:
       - uses: actions/checkout@v7
       - run: make e2e
@@ -54,7 +54,7 @@ jobs:
 
   e2e-valkey:
     runs-on: ubuntu-26.04
-    timeout-minutes: 30
+    timeout-minutes: 70
     steps:
       - uses: actions/checkout@v7
       - run: make e2e

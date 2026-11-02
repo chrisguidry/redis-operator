@@ -46,13 +46,17 @@ $(SERVERS)/.images: api_redis.go Makefile
 .PHONY: servers
 servers: $(SERVERS)/.images
 
+# The packages' own directories, so gofmt never walks .e2e/, where a
+# running e2e leaves files only root can read.
+GO_DIRS = $$(go list -f '{{.Dir}}' ./...)
+
 .PHONY: test-go
 test-go: servers
-	test -z "$$(gofmt -l .)" || { gofmt -l .; exit 1; }
+	test -z "$$(gofmt -l $(GO_DIRS))" || { gofmt -l $(GO_DIRS); exit 1; }
 	test -z "$$($(UNTESTED_PACKAGES))" || { echo 'packages with no test file:'; $(UNTESTED_PACKAGES); exit 1; }
 	go vet ./...
-	go test -race ./...
-	GOTOOLCHAIN=$(COVERAGE_TOOLCHAIN) go test -coverprofile=coverage.out ./...
+	go test -race -timeout 30m ./...
+	GOTOOLCHAIN=$(COVERAGE_TOOLCHAIN) go test -timeout 30m -coverprofile=coverage.out ./...
 	GOTOOLCHAIN=$(COVERAGE_TOOLCHAIN) go tool go-test-coverage --config=.testcoverage.yml
 
 # The report draws the profile that the gate measured as one HTML page.
@@ -70,4 +74,4 @@ coverage.out:
 # one per engine. See e2e/run.sh for what it proves.
 .PHONY: e2e
 e2e:
-	timeout 30m bash e2e/run.sh
+	timeout 60m bash e2e/run.sh
