@@ -69,10 +69,12 @@ func (c *controller) reconcile(ctx context.Context, r *Redis, w *world) error {
 
 	d := decision{c: c, r: r, st: st, status: &status, pods: byName, holder: holder, now: now, nodes: w.nodes}
 	d.replica(ctx)
+	// A single instance fails over too, to itself: when it restarts with
+	// no data, only a failover starts the empty dataset it must serve.
+	d.failover()
 	// A Redis scaling down to one instance still has replicas to switch
 	// over to until the StatefulSet shrinks.
 	if r.Spec.instances() > 1 || len(pods) > 1 {
-		d.failover()
 		d.switchover(w.statefulSets[key].Status.UpdateRevision)
 	}
 	d.minReplicasToWrite()
@@ -121,7 +123,7 @@ func (d *decision) failover() {
 	primary := d.status.TargetPrimary
 	reason := ""
 	switch {
-	case d.st.silentFor(primary, d.now) > t.failureThreshold:
+	case d.st.silentFor(primary, d.now) > t.failureThreshold && d.hasOtherCandidate(primary):
 		reason = fmt.Sprintf("the instance manager of %s has not answered for %s", primary, t.failureThreshold)
 	case d.holder == "" && d.targetCannotTake():
 		reason = fmt.Sprintf("%s restarted with no data and cannot take the primary lease", d.status.TargetPrimary)
@@ -172,11 +174,17 @@ func (d *decision) choosePrimary() {
 	if best == "" && allAnswered && !anyData {
 		// Every instance answered, and none holds data: they all
 		// restarted with no volume. The data is gone, so the dataset
-		// starts again on instance 0.
-		d.c.log.printf("%s: every instance restarted with no data; starting an empty dataset on %s", d.subject(), instanceName(d.r.Metadata.Name, 0))
-		d.status.TargetPrimary = instanceName(d.r.Metadata.Name, 0)
+		// starts again on instance 0. A Redis that replicates loses
+		// nothing, because instance 0 copies the source again.
+		first := instanceName(d.r.Metadata.Name, 0)
+		d.status.TargetPrimary = first
 		d.status.CurrentPrimary = ""
 		d.st.pendingSince = time.Time{}
+		if d.status.replicating() {
+			d.c.log.printf("%s: every instance restarted with no data; %s copies the source again", d.subject(), first)
+			return
+		}
+		d.c.log.printf("%s: every instance restarted with no data; starting an empty dataset on %s", d.subject(), first)
 		d.setCondition("DataLost", ConditionTrue, "AllInstancesEmpty", "every instance restarted with no data, so the dataset started empty")
 		return
 	}
@@ -189,6 +197,15 @@ func (d *decision) choosePrimary() {
 	// The new target may wait out the old holder's Lease before it takes
 	// it, so the wait for a holder starts again from here.
 	d.st.leaderlessSince = d.now
+}
+
+// hasOtherCandidate reports whether a failover could name an instance
+// other than primary. A single instance cannot, so its silence, as while
+// its pod restarts, starts no failover: it comes back as the target, and
+// takes the Lease again if it kept its data. If it did not, it says so,
+// and that starts the failover that begins an empty dataset.
+func (d *decision) hasOtherCandidate(primary string) bool {
+	return d.r.Spec.instances() > 1 || !d.staysAfterScaling(primary)
 }
 
 // targetCannotTake reports whether the target answered that it has no
@@ -436,8 +453,9 @@ func (c *controller) writeStatus(ctx context.Context, r *Redis, status RedisStat
 		return err
 	}
 	// A merge patch keeps a field it does not state, so a field that is
-	// no longer set, such as the end of a switchover, is a null.
-	for _, optional := range []string{"switchover", "replica", "rollout"} {
+	// no longer set, such as the end of a switchover or the current
+	// primary of a dataset that starts again empty, is a null.
+	for _, optional := range []string{"switchover", "replica", "rollout", "currentPrimary"} {
 		if _, set := fields[optional]; !set {
 			fields[optional] = nil
 		}

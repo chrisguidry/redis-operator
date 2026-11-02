@@ -331,3 +331,41 @@ func TestASilentOldHolderDoesNotRestartAFailoverItAlreadyStarted(t *testing.T) {
 	mustMatch(t, failovers, 1)
 	mustMatch(t, h.redis().Status.TargetPrimary, "cache-1")
 }
+
+func TestARedisWhoseInstancesAllRestartEmptyStartsAnEmptyDataset(t *testing.T) {
+	for _, instances := range []int{1, 3} {
+		t.Run(strconv.Itoa(instances), func(t *testing.T) {
+			h := startHarness(t, instances)
+			h.steady("cache-0", instances)
+			h.pass()
+
+			h.holdLease("")
+			for i := range instances {
+				name := instanceName("cache", i)
+				h.setReport(instanceReport{Name: name, Role: reportDetached, Target: "cache-0"})
+			}
+			h.passFor(10*time.Second, 2*time.Second)
+
+			status := h.redis().Status
+			mustMatch(t, status.TargetPrimary, "cache-0")
+			mustMatch(t, status.CurrentPrimary, "")
+			lost, _ := findCondition(status.Conditions, "DataLost")
+			mustMatch(t, lost.Status, ConditionTrue)
+			mustMatch(t, lost.Reason, "AllInstancesEmpty")
+		})
+	}
+}
+
+// A single instance has no other to fail over to, so its silence while
+// its pod restarts starts no failover, and it comes back as primary
+// with whatever data it kept.
+func TestASilentSingleInstanceStaysTheTarget(t *testing.T) {
+	h := startHarness(t, 1)
+	h.steady("cache-0", 1)
+	h.pass()
+
+	h.silence("cache-0")
+	h.passFor(30*time.Second, 2*time.Second)
+
+	mustMatch(t, h.redis().Status.TargetPrimary, "cache-0")
+}

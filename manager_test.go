@@ -372,3 +372,19 @@ func TestAStoppingPrimaryAsksForASwitchoverAndHandsOver(t *testing.T) {
 	mustSucceed(t, err)
 	mustMatch(t, got, any("value"))
 }
+
+// A single instance has no replica to hand its role to, so it stops at
+// once instead of waiting for a switchover that cannot come.
+func TestAStoppingSingleInstanceStopsWithoutWaitingForAHandover(t *testing.T) {
+	h := startManagerHarness(t, "redis", 1)
+	h.setTarget("cache-0")
+	h.start("cache-0", "")
+	h.waitFor("cache-0 is a ready primary", func() bool { return h.report("cache-0").Ready })
+
+	started := time.Now()
+	h.stop("cache-0")
+
+	if waited := time.Since(started); waited >= time.Second {
+		t.Fatalf("cache-0 took %s to stop", waited)
+	}
+}

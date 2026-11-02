@@ -32,7 +32,7 @@ kubectl -n example get pods -l redis.guid.foo/cluster=cache -L redis.guid.foo/ro
 | `Ready` | False | `FailoverInProgress` | `status.targetPrimary` is `pending`: the primary failed and the operator is choosing the next one |
 | `SwitchoverFailed` | True | `Timeout` | the target did not take the primary role within 30 seconds; the old primary stays, and the operator tries again after 30 seconds |
 | `SwitchoverFailed` | False | `Started` | the last switchover started; this is the normal state after one |
-| `DataLost` | True | `AllInstancesEmpty` | every instance restarted with no data, so the data set started empty on instance 0 |
+| `DataLost` | True | `AllInstancesEmpty` | every instance restarted with no data, so the data set started empty on instance 0; a `Redis` without storage sets it whenever all its pods restart, which for one instance is every restart of its pod |
 | `RolloutFailed` | True | `CanaryFailed` | a new image failed on the canary and was rolled back; see the `upgrade` skill |
 | `RolloutFailed` | False | `Completed`, `Reverted` | the last rollout finished, or `spec.image` went back |
 | `SourceReachable` | True/False | `Reachable`, `Unreachable` | replica mode only: whether the operator reaches the source |
@@ -161,7 +161,8 @@ The operator clears the annotation once the pod is a replica, so a
 later term as primary does not start another switchover. The instance
 manager sets the same annotation itself when the primary's pod is
 deleted, and keeps serving until the operator has moved the Lease, or
-for 20 seconds.
+for 20 seconds. A `Redis` of one instance has no replica to move the
+Lease to, so its deleted pod stops at once.
 
 The other switchover reasons are `NodeCordoned`, `Rollout`, and
 `ScaleDown`. The operator logs `a switchover off cache-0 is needed

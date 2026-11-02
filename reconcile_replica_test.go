@@ -309,3 +309,25 @@ func TestTheOperatorFindsTheSourceThroughASentinelWithAPassword(t *testing.T) {
 	mustMatch(t, reachable.Status, ConditionTrue)
 	mustMatch(t, h.redis().Status.Replica.Source, fmt.Sprintf("%s:%d", host, port))
 }
+
+// While a Redis replicates, its source holds the dataset, so instances
+// that all restart empty copy it again and lose nothing.
+func TestAReplicatingRedisWhoseInstancesRestartEmptyCopiesTheSourceAgain(t *testing.T) {
+	h := startHarness(t, 1)
+	h.replicaOf("127.0.0.1", freePort(t), true)
+	h.pass()
+	h.adoptingHolder("127.0.0.1", 100)
+	h.pass()
+	mustMatch(t, h.redis().Status.CurrentPrimary, "cache-0")
+
+	h.holdLease("")
+	h.setReport(instanceReport{Name: "cache-0", Role: reportDetached, Target: "cache-0"})
+	h.passFor(10*time.Second, 2*time.Second)
+
+	status := h.redis().Status
+	mustMatch(t, status.TargetPrimary, "cache-0")
+	mustMatch(t, status.CurrentPrimary, "")
+	mustMatch(t, status.Replica.Phase, replicaReplicating)
+	_, lost := findCondition(status.Conditions, "DataLost")
+	mustMatch(t, lost, false)
+}

@@ -138,6 +138,17 @@ two instances share a machine.
 5. The operator moves the role labels to the new holder. The other
    instances follow the holder.
 
+A `Redis` of one instance has no other instance to fail over to. Its
+silence, as while its pod restarts, starts no failover, and the
+instance comes back as the target and takes its Lease again if it kept
+its data on a volume. An instance with no volume restarts empty,
+releases the Lease, and reports that it cannot take it, which starts a
+failover that names the same instance again with `DataLost` set, as
+when every instance of a larger `Redis` restarts empty. A `Redis` that
+replicates loses nothing that way, because its instance 0 copies the
+source again, so it sets no `DataLost`. A single instance whose pod is
+deleted stops at once, because no switchover can come.
+
 A primary that is alive when the failover starts steps down as in
 "Closing a demoted primary's clients" below, then releases the Lease.
 Its replicas detached first, so it refuses writes with `NOREPLICAS`
@@ -282,7 +293,9 @@ holder, or while the StatefulSet has fewer pods than `instances`.
   traffic to and from the primary's pod until a new primary takes over
   and for 15 seconds more; change `memory` and let the operator roll it;
   scale from three instances to one while the primary is not instance
-  0, and back to three. A second writer keeps one connection through
+  0, and back to three; delete the pod of a one-instance `Redis` with no
+  volume, which must come back empty with `DataLost`, and of one with a
+  volume, which must keep its data. A second writer keeps one connection through
   `<name>-rw` for as long as the server keeps it, as an application's
   client does. After each scenario, the test checks that the counter is
   at least the highest confirmed value, that the writer confirms new

@@ -133,6 +133,7 @@ type manager struct {
 	switchingOver  bool
 	everHadPrimary bool
 	minReplicas    int
+	instances      int
 	podIPs         map[string]string
 
 	hasData       bool
@@ -261,10 +262,11 @@ func (m *manager) run(stop context.Context) error {
 }
 
 // readyToStop says whether a stopping manager may stop its server: it
-// holds no Lease, so it is no primary, or it waited as long as it may
-// for the operator to name the next one.
+// holds no Lease, so it is no primary, it is the only instance, so no
+// other can take the role, or it waited as long as it may for the
+// operator to name the next one.
 func (m *manager) readyToStop() bool {
-	return !m.lease.held() || time.Since(m.stopStarted) > m.config.handoverWait
+	return !m.lease.held() || m.instances == 1 || time.Since(m.stopStarted) > m.config.handoverWait
 }
 
 func (m *manager) readRedisUntilAnswered(ctx context.Context) (Redis, error) {
@@ -388,6 +390,7 @@ func (m *manager) readDecision(ctx context.Context, now time.Time) error {
 	m.switchingOver = redis.Status.Switchover != nil
 	m.everHadPrimary = redis.Status.CurrentPrimary != ""
 	m.minReplicas = redis.minReplicasToWrite()
+	m.instances = redis.Spec.instances()
 	m.replicaMode = redis.Status.replicating() && redis.Spec.Replica != nil
 	if redis.Spec.Replica != nil {
 		m.replicaSource = redis.Spec.Replica.Source

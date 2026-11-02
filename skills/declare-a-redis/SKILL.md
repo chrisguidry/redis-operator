@@ -65,7 +65,10 @@ every instance restarts at once, the data is gone, the operator starts
 an empty data set on instance 0, and it sets the condition `DataLost`
 with the reason `AllInstancesEmpty`. A `Redis` of one instance without
 storage loses its data each time its pod restarts, including on an
-image or operator upgrade.
+image or operator upgrade, and comes back by itself as an empty primary
+with `DataLost` set. A `Redis` that is still replicating from an
+adoption source sets no `DataLost` when its instances restart empty:
+instance 0 copies the source again.
 
 ### Placement
 
