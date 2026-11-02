@@ -21,9 +21,21 @@ YAML
 }
 
 # wait_ready waits until the Redis reports Ready with as many ready
-# instances as its spec names.
+# instances as its spec names, and every replica holds the primary's
+# data. The next scenario breaks one instance, and the operator's
+# failover quorum tolerates one failure only when every other instance
+# holds the data: started on a replica that has not synced since its
+# container restarted, a scenario breaks two, and the failover rightly
+# waits for the old primary.
 wait_ready() {
-  retry "the Redis being ready" "$1" redis_ready
+  retry "the Redis being ready" "$1" redis_whole
+}
+
+# redis_whole checks the Ready condition and the instance managers'
+# own reports at once. The Ready condition alone can pass on a status
+# written just before a container restarted.
+redis_whole() {
+  redis_ready && instances_synced
 }
 
 redis_ready() {
@@ -33,6 +45,31 @@ redis_ready() {
   status=$(kubectl -n "$NS" get redis cache -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')
   echo "instances=$want readyInstances=$ready Ready=$status"
   [ "$ready" = "$want" ] && [ "$status" = True ]
+}
+
+# instances_synced reads each instance manager's /status through the
+# API server's proxy, and passes when the current primary holds the
+# Lease and streams to every other pod, and every other pod follows it
+# with its link up and is not stopping.
+instances_synced() {
+  local holder ip pods others report pod
+  holder=$(primary)
+  ip=$(kubectl -n "$NS" get pod "$holder" -o jsonpath='{.status.podIP}')
+  pods=$(kubectl -n "$NS" get pods -l redis.guid.foo/cluster=cache -o name | cut -d/ -f2)
+  others=$(($(grep -c . <<<"$pods") - 1))
+  for pod in $pods; do
+    report=$(kubectl get --raw "/api/v1/namespaces/$NS/pods/$pod:9123/proxy/status") || return 1
+    echo "$pod: $report"
+    grep -q '"stopping":true' <<<"$report" && return 1
+    if [ "$pod" = "$holder" ]; then
+      grep -q '"role":"primary","holdsLease":true' <<<"$report" || return 1
+      [ "$others" = 0 ] || grep -q "\"syncedReplicas\":$others[,}]" <<<"$report" || return 1
+    else
+      grep -q '"role":"replica"' <<<"$report" &&
+        grep -q '"linkUp":true' <<<"$report" &&
+        grep -q "\"following\":\"$ip\"" <<<"$report" || return 1
+    fi
+  done
 }
 
 primary() {

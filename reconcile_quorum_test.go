@@ -200,3 +200,25 @@ func TestTheQuorumCountsThePodsAScaleDownHasNotRemoved(t *testing.T) {
 
 	mustMatch(t, h.redis().Status.TargetPrimary, targetPending)
 }
+
+// A replica that restarted with no data and has not synced since holds
+// none of the writes it acknowledged, so while the old primary is
+// unreachable, a failover that reached only one replica with data waits.
+// The old primary, once reachable and detached with its data, is one of
+// the instances the quorum counts, so its return completes the quorum.
+func TestAnOldPrimaryThatComesBackWithItsDataCompletesTheQuorum(t *testing.T) {
+	h := startHarness(t, 3)
+	h.failQuorum(3, 1)
+	h.holdLease("")
+	h.setReport(instanceReport{Name: "cache-1", Role: reportDetached, Target: targetPending, Offset: 20})
+	h.setReport(detached("cache-2", 117))
+	h.passFor(30*time.Second, 2*time.Second)
+	mustMatch(t, h.redis().Status.TargetPrimary, targetPending)
+	mustMatch(t, findReady(t, h.redis()).Reason, "QuorumNotReached")
+
+	h.unsilence("cache-0")
+	h.setReport(detached("cache-0", 120))
+	h.passFor(2*time.Second, 2*time.Second)
+
+	mustMatch(t, h.redis().Status.TargetPrimary, "cache-0")
+}

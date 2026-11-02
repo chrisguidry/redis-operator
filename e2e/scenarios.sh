@@ -104,8 +104,8 @@ scenario_partition_primary_from_peers() {
 admit() {
   docker exec "$1" sh -c "
     PATH=\$PATH:/bin/aux
-    iptables $4 FORWARD -s $2 -d $3 -j ACCEPT
-    iptables $4 FORWARD -s $3 -d $2 -j ACCEPT"
+    iptables -t mangle $4 FORWARD -s $2 -d $3 -j ACCEPT
+    iptables -t mangle $4 FORWARD -s $3 -d $2 -j ACCEPT"
 }
 
 # old_primary_refuses writes a probe key to the server at $1 by its pod
@@ -129,7 +129,7 @@ scenario_partition_primary() {
   old=$(primary)
   node=$(node_of "$old")
   ip=$(kubectl -n "$NS" get pod "$old" -o jsonpath='{.status.podIP}')
-  log "scenario: partition the primary $old ($ip on $node) for 45 seconds"
+  log "scenario: partition the primary $old ($ip on $node) until another instance is primary, then 15 seconds more"
   partition "$node" "$ip" -I
   retry "a new primary" 90 primary_is_not "$old"
   sleep 15
@@ -139,12 +139,15 @@ scenario_partition_primary() {
 }
 
 # partition adds (-I) or removes (-D) the rules that drop the pod's
-# forwarded traffic on its node.
+# forwarded traffic on its node. They go in the mangle table, which runs
+# before the filter table: k3s's network policy controller keeps its own
+# jump at the top of the filter table's FORWARD chain, and that chain
+# accepts the pod's traffic before a drop below it is reached.
 partition() {
   docker exec "$1" sh -c "
     PATH=\$PATH:/bin/aux
-    iptables $3 FORWARD -s $2 -j DROP
-    iptables $3 FORWARD -d $2 -j DROP"
+    iptables -t mangle $3 FORWARD -s $2 -j DROP
+    iptables -t mangle $3 FORWARD -d $2 -j DROP"
 }
 
 scenario_rollout() {

@@ -36,7 +36,7 @@ env:
 jobs:
   release:
     runs-on: ubuntu-26.04
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       # git describe needs the tags, so the checkout fetches the whole
       # history.
