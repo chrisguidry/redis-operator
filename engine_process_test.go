@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -93,14 +94,33 @@ func (s *testServer) client(t *testing.T) *redisConn {
 	return c
 }
 
+// handedOut holds every port freePort returned. The kernel can hand a
+// port it just freed to the next request, so two calls in a row, such
+// as the ports of one SeaweedFS server, could otherwise get the same
+// port, and the second listener fails.
+var handedOut = struct {
+	sync.Mutex
+	ports map[int]bool
+}{ports: map[int]bool{}}
+
+// freePort returns a port nothing listens on, and that no earlier call
+// in this process returned.
 func freePort(t *testing.T) int {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	handedOut.Lock()
+	defer handedOut.Unlock()
+	for {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := listener.Addr().(*net.TCPAddr).Port
+		_ = listener.Close()
+		if !handedOut.ports[port] {
+			handedOut.ports[port] = true
+			return port
+		}
 	}
-	defer listener.Close()
-	return listener.Addr().(*net.TCPAddr).Port
 }
 
 // hostPort turns "127.0.0.1:6379" into "127.0.0.1 6379", the form that

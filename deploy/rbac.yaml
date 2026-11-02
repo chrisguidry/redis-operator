@@ -48,9 +48,11 @@ rules:
   - apiGroups: [""]
     resources: [services, serviceaccounts]
     verbs: [create, patch]
+  # delete removes the budget on the primary when a Redis scales to one
+  # instance.
   - apiGroups: [policy]
     resources: [poddisruptionbudgets]
-    verbs: [create, patch]
+    verbs: [create, patch, delete]
   # The Role a Redis's instance managers run under. Kubernetes lets the
   # operator grant only what it holds, which is everything that Role
   # names.

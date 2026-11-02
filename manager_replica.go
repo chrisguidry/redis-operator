@@ -14,15 +14,16 @@ import (
 )
 
 // sourceAddress resolves where the source's primary is: the host the
-// spec names, or the primary its sentinels name.
-func sourceAddress(ctx context.Context, source ReplicaSource, namespace string) (string, int, error) {
+// spec names, or the primary its sentinels name, asked with their
+// password.
+func sourceAddress(ctx context.Context, source ReplicaSource, namespace, sentinelPassword string) (string, int, error) {
 	if source.Sentinel == nil {
 		return qualifyHost(source.Host, namespace), source.port(), nil
 	}
 	for _, address := range source.Sentinel.Addresses {
 		address = qualifyHost(address, namespace)
 		attempt, cancel := context.WithTimeout(ctx, 2*time.Second)
-		conn, err := dialRedis(attempt, address, "")
+		conn, err := dialRedis(attempt, address, sentinelPassword)
 		if err != nil {
 			cancel()
 			continue
@@ -58,6 +59,16 @@ func readSecretKey(ctx context.Context, client *kubeClient, namespace string, re
 	return string(value), nil
 }
 
+// readSentinelPassword reads the password of the source's sentinels,
+// or none when the spec names none.
+func readSentinelPassword(ctx context.Context, client *kubeClient, namespace string, source ReplicaSource) (string, error) {
+	ref := source.sentinelPassword()
+	if ref == nil {
+		return "", nil
+	}
+	return readSecretKey(ctx, client, namespace, *ref)
+}
+
 // followSource makes the holder's server a replica of the source.
 func (m *manager) followSource(ctx context.Context, info replicationInfo) error {
 	password := ""
@@ -71,7 +82,11 @@ func (m *manager) followSource(ctx context.Context, info replicationInfo) error 
 	if err := m.setMasterauth(ctx, password); err != nil {
 		return err
 	}
-	host, port, err := sourceAddress(ctx, m.replicaSource, m.config.namespace)
+	sentinelPassword, err := readSentinelPassword(ctx, m.client, m.config.namespace, m.replicaSource)
+	if err != nil {
+		return err
+	}
+	host, port, err := sourceAddress(ctx, m.replicaSource, m.config.namespace, sentinelPassword)
 	if err != nil {
 		return err
 	}

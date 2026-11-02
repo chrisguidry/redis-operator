@@ -113,14 +113,20 @@ func TestPromotionMakesTheHolderTheWritablePrimary(t *testing.T) {
 	})
 }
 
-// startSentinel runs a real sentinel that monitors source.
-func startSentinel(t *testing.T, source *testServer) string {
+const sentinelPassword = "sentinel-password"
+
+// startSentinel runs a real sentinel that monitors source, and that
+// asks its own clients for requirepass when it is not empty.
+func startSentinel(t *testing.T, source *testServer, requirepass string) string {
 	t.Helper()
 	dir := t.TempDir()
 	port := freePort(t)
 	host, sourcePort := sourceHostPort(source)
 	config := fmt.Sprintf("port %d\nbind 127.0.0.1\ndir %s\nsentinel monitor mymaster %s %d 1\nsentinel auth-pass mymaster %s\n",
 		port, dir, host, sourcePort, sourcePassword)
+	if requirepass != "" {
+		config += "requirepass " + requirepass + "\n"
+	}
 	path := filepath.Join(dir, "sentinel.conf")
 	mustSucceed(t, os.WriteFile(path, []byte(config), 0o600))
 	cmd := exec.Command(serverBinary(source.engine), path, "--sentinel")
@@ -131,17 +137,68 @@ func startSentinel(t *testing.T, source *testServer) string {
 	})
 	address := fmt.Sprintf("127.0.0.1:%d", port)
 	eventually(t, "the sentinel names the primary", func() bool {
-		host, _, err := sourceAddress(context.Background(), ReplicaSource{Sentinel: &SentinelSource{MasterName: "mymaster", Addresses: []string{address}}}, testNamespace)
+		host, _, err := sourceAddress(context.Background(), ReplicaSource{Sentinel: &SentinelSource{MasterName: "mymaster", Addresses: []string{address}}}, testNamespace, requirepass)
 		return err == nil && host != ""
 	})
 	return address
 }
 
+func TestSourceAddressAsksASentinelWithItsOwnPassword(t *testing.T) {
+	cases := []struct {
+		name        string
+		requirepass string
+		password    string
+		answers     bool
+	}{
+		{"an open sentinel", "", "", true},
+		{"a sentinel with a password, given it", sentinelPassword, sentinelPassword, true},
+		{"a sentinel with a password, not given it", sentinelPassword, "", false},
+	}
+	source := startSource(t, "redis")
+	open := startSentinel(t, source, "")
+	closed := startSentinel(t, source, sentinelPassword)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			address := open
+			if c.requirepass != "" {
+				address = closed
+			}
+
+			host, _, err := sourceAddress(context.Background(), ReplicaSource{Sentinel: &SentinelSource{MasterName: "mymaster", Addresses: []string{address}}}, testNamespace, c.password)
+
+			mustMatch(t, err == nil && host != "", c.answers)
+		})
+	}
+}
+
 func TestTheHolderFollowsThePrimaryASentinelNames(t *testing.T) {
 	source := startSource(t, "redis")
-	sentinel := startSentinel(t, source)
+	sentinel := startSentinel(t, source, "")
 	h := startManagerHarness(t, "redis", 1)
 	h.adopting(ReplicaSource{Sentinel: &SentinelSource{MasterName: "mymaster", Addresses: []string{"127.0.0.1:1", sentinel}}})
+	h.setTarget("cache-0")
+
+	h.start("cache-0", "")
+
+	host, _ := sourceHostPort(source)
+	h.waitFor("cache-0 follows the source the sentinel names", func() bool {
+		return h.report("cache-0").Following == host && h.report("cache-0").LinkUp
+	})
+}
+
+func TestTheHolderFollowsThePrimaryASentinelWithAPasswordNames(t *testing.T) {
+	source := startSource(t, "redis")
+	sentinel := startSentinel(t, source, sentinelPassword)
+	h := startManagerHarness(t, "redis", 1)
+	h.api.create(secretsResource, map[string]any{
+		"apiVersion": "v1", "kind": "Secret",
+		"metadata": map[string]any{"name": "sentinel", "namespace": testNamespace},
+		"data":     map[string]any{"password": []byte(sentinelPassword)},
+	})
+	h.adopting(ReplicaSource{Sentinel: &SentinelSource{
+		MasterName: "mymaster", Addresses: []string{sentinel},
+		Password: &SecretKeyRef{Secret: "sentinel", Key: "password"},
+	}})
 	h.setTarget("cache-0")
 
 	h.start("cache-0", "")

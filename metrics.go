@@ -24,6 +24,7 @@ const (
 	reasonNodeCordoned       = "NodeCordoned"
 	reasonPodDeleted         = "PodDeleted"
 	reasonRollout            = "Rollout"
+	reasonScaleDown          = "ScaleDown"
 )
 
 // The resources the operator watches, by the name that labels their
@@ -86,7 +87,7 @@ func newMetrics(version string) *metrics {
 	for _, resource := range watchedResources {
 		m.watchRestarts.WithLabelValues(resource)
 	}
-	for _, reason := range []string{reasonNodeCordoned, reasonPodDeleted, reasonRollout} {
+	for _, reason := range []string{reasonNodeCordoned, reasonPodDeleted, reasonRollout, reasonScaleDown} {
 		m.switchovers.WithLabelValues(reason)
 	}
 	return m

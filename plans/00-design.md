@@ -96,7 +96,7 @@ The design instead:
    for the renew deadline asks its peers. If a peer cannot be reached or
    names a different target, it detaches: it points `REPLICAOF` at an
    unreachable address, which makes its Redis a read-only replica that
-   keeps its data, and it kills its client connections. If every peer
+   keeps its data, and it closes its client connections. If every peer
    agrees with it, it keeps serving, so an API server outage alone stops
    no healthy primary.
 4. **Redis fences itself too.** With replicas, every instance runs with
@@ -127,10 +127,14 @@ The design instead:
    `redis.guid.foo/switchover-requested`, and keeps serving until the
    operator has moved the Lease or 20 seconds have passed.
 8. **Clients connect through a Service.** `<name>-rw` selects the pod
-   that holds the Lease, by a role label the operator writes, and
-   `<name>-ro` selects the replicas. Any Redis client works. A client
-   whose connection outlives a switch hits a demoted Redis, which
-   answers writes with `READONLY`, or a killed connection.
+   that holds the Lease while it is also the target, by a role label the
+   operator writes, and `<name>-ro` selects the replicas. Any Redis
+   client works. A demoted Redis answers writes with `READONLY`, which
+   clients take for an application error, so a primary that steps down
+   closes its clients' connections, as Sentinel does, and they
+   reconnect through the Service. It does so only after the label has
+   left its pod, or they would reconnect to it.
+   [01-high-availability.md](01-high-availability.md) gives the steps.
 
 ### What this design costs
 

@@ -150,6 +150,9 @@ type replicationInfo struct {
 	offset     int64
 	replid     string
 	replicas   int
+	// onlineReplicas counts the replicas that finished their sync and
+	// take the replication stream, as the primary sees them.
+	onlineReplicas int
 	// failoverState is "no-failover" except while a FAILOVER runs.
 	failoverState string
 }
@@ -190,6 +193,9 @@ func parseReplication(text string) replicationInfo {
 			info.failoverState = value
 		case "connected_slaves":
 			info.replicas, _ = strconv.Atoi(value)
+		}
+		if strings.HasPrefix(key, "slave") && strings.Contains(value, "state=online") {
+			info.onlineReplicas++
 		}
 	}
 	return info

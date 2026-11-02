@@ -96,7 +96,7 @@ func runOperator(ctx context.Context, getenv func(string) string, log io.Writer)
 		return fmt.Errorf("serving metrics: %w", err)
 	}
 	fmt.Fprintf(log, "redis-operator %s started, metrics on %s, instance managers from %s\n", version, address, image)
-	return newElection(client, namespace, candidateIdentity(), readings, log).serve(ctx, func(ctx context.Context) error {
+	return newElection(client, namespace, candidateIdentity(os.Hostname), readings, log).serve(ctx, func(ctx context.Context) error {
 		c := newController(client, readings, image, time.Now, log)
 		c.timings = stages
 		return c.run(ctx)
@@ -136,6 +136,7 @@ func runManager(ctx context.Context, getenv func(string) string, log io.Writer) 
 		password:        getenv("REDIS_PASSWORD"),
 		port:            serverPort,
 		statusPort:      statusPort,
+		loopback:        true,
 		dataDir:         "/data",
 		configPath:      filepath.Join("/manager", "server.conf"),
 		backupDir:       backupMount,
@@ -146,6 +147,8 @@ func runManager(ctx context.Context, getenv func(string) string, log io.Writer) 
 		stepPeriod:      managerStepPeriod,
 		failoverTimeout: switchoverTimeout,
 		handoverWait:    handoverWait,
+		demotionHold:    demotionHold,
+		routeSettle:     routeSettle,
 	}
 	for name, value := range map[string]string{
 		"POD_NAMESPACE": config.namespace, "REDIS_NAME": config.redisName, "POD_NAME": config.podName,

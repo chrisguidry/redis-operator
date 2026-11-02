@@ -83,3 +83,14 @@ func TestReplicationInfoReadsTheReplicationSection(t *testing.T) {
 		})
 	}
 }
+
+func TestReplicationInfoCountsOnlyTheReplicasThatFinishedTheirSync(t *testing.T) {
+	text := "# Replication\r\nrole:master\r\nconnected_slaves:2\r\n" +
+		"slave0:ip=10.0.0.2,port=6379,state=online,offset=100,lag=0\r\n" +
+		"slave1:ip=10.0.0.3,port=6379,state=wait_bgsave,offset=0,lag=0\r\n"
+
+	info := parseReplication(text)
+
+	mustMatch(t, info.replicas, 2)
+	mustMatch(t, info.onlineReplicas, 1)
+}

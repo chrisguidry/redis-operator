@@ -318,12 +318,24 @@ func (c *controller) ensureChildren(ctx context.Context, r *Redis, st *redisStat
 		}
 		st.hasSecret = true
 	}
-	for _, each := range children(r, c.operatorImage, storeSecrets(r, w), restoreVolume(r, w)) {
+	holder := w.leases[r.Metadata.Namespace+"/"+primaryLeaseName(r.Metadata.Name)].Spec.HolderIdentity
+	for _, each := range children(r, c.operatorImage, storeSecrets(r, w), restoreVolume(r, w), replicasFor(r, holder)) {
+		key := each.resource.String() + "/" + each.name
+		if each.remove {
+			if st.applied[key] == removedChild {
+				continue
+			}
+			err := c.client.delete(ctx, each.resource, r.Metadata.Namespace, each.name, "", "")
+			if err != nil && !errors.Is(err, errNotFound) {
+				return fmt.Errorf("deleting %s %s: %w", each.resource, each.name, err)
+			}
+			st.applied[key] = removedChild
+			continue
+		}
 		body, err := json.Marshal(each.body)
 		if err != nil {
 			return err
 		}
-		key := each.resource.String() + "/" + each.name
 		if st.applied[key] == string(body) {
 			continue
 		}
@@ -334,6 +346,10 @@ func (c *controller) ensureChildren(ctx context.Context, r *Redis, st *redisStat
 	}
 	return nil
 }
+
+// removedChild marks in redisState.applied a child the operator
+// deleted, so it deletes it once and not on every pass.
+const removedChild = "removed"
 
 func newPassword() string {
 	bytes := make([]byte, 24)
@@ -402,8 +418,12 @@ func storeSecrets(r *Redis, w *world) []string {
 	if r.Spec.Backup != nil && r.Spec.Backup.Volume == nil && r.Spec.Backup.Credentials.Secret != "" {
 		names = append(names, r.Spec.Backup.Credentials.Secret)
 	}
-	if replica := r.Spec.Replica; replica != nil && replica.Source.Password != nil && !slices.Contains(names, replica.Source.Password.Secret) {
-		names = append(names, replica.Source.Password.Secret)
+	if replica := r.Spec.Replica; replica != nil {
+		for _, ref := range []*SecretKeyRef{replica.Source.Password, replica.Source.sentinelPassword()} {
+			if ref != nil && !slices.Contains(names, ref.Secret) {
+				names = append(names, ref.Secret)
+			}
+		}
 	}
 	if b := r.Spec.Bootstrap; b != nil && b.Recovery != nil && b.Recovery.Backup != "" {
 		for _, backup := range w.backups {

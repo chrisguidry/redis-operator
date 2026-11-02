@@ -16,7 +16,7 @@ ENGINE=${ENGINE:-redis}
 NS=e2e
 # SCENARIOS names the scenarios to run, in order, such as
 # SCENARIOS=adoption to run one of them alone.
-SCENARIOS=${SCENARIOS:-delete_primary drain_primary_node operator_down freeze_primary partition_primary backup_restore adoption rollout upgrade broken_image}
+SCENARIOS=${SCENARIOS:-delete_primary drain_primary_node operator_down freeze_primary partition_primary backup_restore adoption rollout scale upgrade broken_image}
 
 # shellcheck source=common.sh disable=SC1091
 source "$E2E_DIR/common.sh"
@@ -70,6 +70,8 @@ print_diagnostics() {
   kubectl -n redis-operator logs -l app=redis-operator --prefix --tail=300 >&2 2>&1 || true
   echo "===== instance managers =====" >&2
   kubectl -n "$NS" logs -l redis.guid.foo/cluster=cache --prefix --tail=100 -c redis >&2 2>&1 || true
+  echo "===== held writer =====" >&2
+  kubectl -n "$NS" logs writer -c held --tail=60 >&2 2>&1 || true
   echo "===== state =====" >&2
   kubectl -n "$NS" get redis,pods,leases,pdb -o wide >&2 2>&1 || true
   kubectl -n "$NS" get redis cache -o yaml >&2 2>&1 || true

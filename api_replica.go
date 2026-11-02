@@ -17,14 +17,25 @@ type ReplicaSource struct {
 }
 
 // SentinelSource follows whichever primary these sentinels name.
+// Password is the sentinels' own requirepass, which is separate from
+// the source's.
 type SentinelSource struct {
-	MasterName string   `json:"masterName"`
-	Addresses  []string `json:"addresses"`
+	MasterName string        `json:"masterName"`
+	Addresses  []string      `json:"addresses"`
+	Password   *SecretKeyRef `json:"password,omitempty"`
 }
 
 type SecretKeyRef struct {
 	Secret string `json:"secret"`
 	Key    string `json:"key"`
+}
+
+// sentinelPassword is the Secret key of the sentinels' password, or nil.
+func (s ReplicaSource) sentinelPassword() *SecretKeyRef {
+	if s.Sentinel == nil {
+		return nil
+	}
+	return s.Sentinel.Password
 }
 
 func (s ReplicaSource) port() int {

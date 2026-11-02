@@ -15,9 +15,16 @@ import (
 // test share a port the way pods do.
 func startManagedServer(t *testing.T, engine, ip string, port int) *server {
 	t.Helper()
+	return startManagedServerWith(t, engine, ip, port, false)
+}
+
+// startManagedServerWith starts a server that also listens on loopback
+// when loopback is true. Only one server on a port may.
+func startManagedServerWith(t *testing.T, engine, ip string, port int, loopback bool) *server {
+	t.Helper()
 	dir := t.TempDir()
 	settings := serverSettings{
-		engine: engine, bindIP: ip, port: port, dataDir: dir,
+		engine: engine, bindIP: ip, loopback: loopback, port: port, dataDir: dir,
 		configPath: filepath.Join(dir, "server.conf"), password: testPassword,
 		maxmemory: 64 << 20, maxmemoryPolicy: "noeviction",
 	}
@@ -64,6 +71,21 @@ func TestAServerStartsDetachedAndRefusesWrites(t *testing.T) {
 	}
 }
 
+func TestAClientInThePodReachesTheServerOnLoopback(t *testing.T) {
+	for _, engine := range engines {
+		t.Run(engine, func(t *testing.T) {
+			port := freePort(t)
+			startManagedServerWith(t, engine, "127.0.0.2", port, true)
+			local := &server{addr: fmt.Sprintf("127.0.0.1:%d", port), password: testPassword}
+			t.Cleanup(local.close)
+
+			_, err := local.do(context.Background(), "PING")
+
+			mustSucceed(t, err)
+		})
+	}
+}
+
 func TestFailoverToHandsThePrimaryRoleOverWithItsData(t *testing.T) {
 	for _, engine := range engines {
 		t.Run(engine, func(t *testing.T) {
@@ -81,7 +103,9 @@ func TestFailoverToHandsThePrimaryRoleOverWithItsData(t *testing.T) {
 
 			mustSucceed(t, err)
 			mustMatch(t, replication(t, a).role, "slave")
-			mustMatch(t, replication(t, b).role, "master")
+			// The old primary turns replica before the new one takes the
+			// PSYNC that promotes it.
+			eventually(t, "b is the primary", func() bool { return replication(t, b).role == "master" })
 			got, err := b.do(ctx, "GET", "key")
 			mustSucceed(t, err)
 			mustMatch(t, got, any("value"))

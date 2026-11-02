@@ -86,7 +86,24 @@ func TestPromotionPausesTheSourceAndWaitsForTheHolder(t *testing.T) {
 	mustMatch(t, adopted.Status, ConditionTrue)
 }
 
-func TestPromotionWithAnUnreachableSourcePromotesAtOnce(t *testing.T) {
+func TestPromotionWithASourceNeitherTheOperatorNorTheHolderReachesPromotesAtOnce(t *testing.T) {
+	h := startHarness(t, 2)
+	port := freePort(t)
+	h.replicaOf("127.0.0.1", port, true)
+	h.pass()
+	h.adoptingHolderUnlinked("127.0.0.1")
+	h.pass()
+
+	h.replicaOf("127.0.0.1", port, false)
+	h.pass()
+
+	mustMatch(t, h.redis().Status.Replica.Phase, replicaPromoted)
+}
+
+// The operator's own connection can fail where the holder's does not,
+// as when a NetworkPolicy admits only the Redis pods, so a holder with
+// its link up says the source is alive and may still take writes.
+func TestPromotionWithASourceOnlyTheHolderReachesWaits(t *testing.T) {
 	h := startHarness(t, 2)
 	port := freePort(t)
 	h.replicaOf("127.0.0.1", port, true)
@@ -97,7 +114,11 @@ func TestPromotionWithAnUnreachableSourcePromotesAtOnce(t *testing.T) {
 	h.replicaOf("127.0.0.1", port, false)
 	h.pass()
 
-	mustMatch(t, h.redis().Status.Replica.Phase, replicaPromoted)
+	mustMatch(t, h.redis().Status.Replica.Phase, replicaReplicating)
+	adopted, _ := findCondition(h.redis().Status.Conditions, "Adopted")
+	mustMatch(t, adopted.Status, ConditionFalse)
+	mustMatch(t, adopted.Reason, "SourceUnreachableFromOperator")
+	mustMatch(t, strings.HasSuffix(adopted.Message, "To promote without pausing the source, remove spec.replica"), true)
 }
 
 func TestReplicaModeDoesNotStartOnARedisThatServed(t *testing.T) {
@@ -260,4 +281,31 @@ func TestAPromotionWhosePasswordSecretIsMissingWaits(t *testing.T) {
 	mustMatch(t, adopted.Status, ConditionFalse)
 	mustMatch(t, adopted.Reason, "PasswordUnreadable")
 	mustMatch(t, strings.Contains(adopted.Message, "missing"), true)
+}
+
+func TestTheOperatorFindsTheSourceThroughASentinelWithAPassword(t *testing.T) {
+	source := startSource(t, "redis")
+	sentinel := startSentinel(t, source, sentinelPassword)
+	host, port := sourceHostPort(source)
+	h := startHarness(t, 2)
+	h.replicaOf(host, port, true)
+	h.api.create(secretsResource, map[string]any{
+		"apiVersion": "v1", "kind": "Secret",
+		"metadata": map[string]any{"name": "sentinel", "namespace": testNamespace},
+		"data":     map[string]any{"password": []byte(sentinelPassword)},
+	})
+	h.api.update(redisResource, testNamespace, h.name, func(object map[string]any) {
+		object["spec"].(map[string]any)["replica"] = toObject(h.t, ReplicaSpec{Enabled: true, Source: ReplicaSource{
+			Password: &SecretKeyRef{Secret: "source", Key: "password"},
+			Sentinel: &SentinelSource{MasterName: "mymaster", Addresses: []string{sentinel}, Password: &SecretKeyRef{Secret: "sentinel", Key: "password"}},
+		}})
+	})
+	h.pass()
+	h.adoptingHolder(host, 0)
+
+	h.pass()
+
+	reachable, _ := findCondition(h.redis().Status.Conditions, "SourceReachable")
+	mustMatch(t, reachable.Status, ConditionTrue)
+	mustMatch(t, h.redis().Status.Replica.Source, fmt.Sprintf("%s:%d", host, port))
 }

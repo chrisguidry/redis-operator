@@ -39,14 +39,18 @@ func (d *decision) replica(ctx context.Context) {
 	}
 }
 
-// errPasswordUnreadable marks a failure to read the source's password,
-// which says nothing about whether the source is up.
-var errPasswordUnreadable = errors.New("the source's password could not be read")
+// errPasswordUnreadable marks a failure to read the source's password
+// or its sentinels', which says nothing about whether the source is up.
+var errPasswordUnreadable = errors.New("a password for the source could not be read")
 
 // sourceConn connects to the source's primary, with its password.
 func (d *decision) sourceConn(ctx context.Context) (*redisConn, string, error) {
 	source := d.r.Spec.Replica.Source
-	host, port, err := sourceAddress(ctx, source, d.r.Metadata.Namespace)
+	sentinelPassword, err := readSentinelPassword(ctx, d.c.client, d.r.Metadata.Namespace, source)
+	if err != nil {
+		return nil, "", fmt.Errorf("%w: %w", errPasswordUnreadable, err)
+	}
+	host, port, err := sourceAddress(ctx, source, d.r.Metadata.Namespace, sentinelPassword)
 	if err != nil {
 		return nil, "", err
 	}
@@ -80,6 +84,13 @@ func (d *decision) holderOffset() (int64, bool) {
 	return report.Offset, ok && report.LinkUp
 }
 
+// holderLinked reports whether the holder's replication link to the
+// source is up.
+func (d *decision) holderLinked() bool {
+	_, linked := d.holderOffset()
+	return linked
+}
+
 func (d *decision) measureLag(ctx context.Context) {
 	offset, address, err := d.sourceOffset(ctx)
 	if err != nil {
@@ -96,11 +107,16 @@ func (d *decision) measureLag(ctx context.Context) {
 // startPromotion pauses writes on the source and marks the promotion
 // started. A Redis whose spec no longer names the source promotes at
 // once, because there is no source to pause, and so does one whose
-// source cannot be reached over the network, because a source that is
-// down takes no writes to lose. A source that answers, even with an
-// error, is still taking writes, so the promotion waits and asks again
-// after a backoff. So does one whose password cannot be read, because
-// that says nothing about the source.
+// source neither the operator nor the holder can reach, because a
+// source that is down takes no writes to lose. A source that answers,
+// even with an error, is still taking writes, so the promotion waits
+// and asks again after a backoff. So does one whose password cannot be
+// read, because that says nothing about the source, and one that only
+// the holder reaches: a NetworkPolicy that admits the Redis pods and not
+// the operator, or a name that resolves only in the Redis's namespace,
+// fails the operator's connection to a source that is up. A source
+// whose machine is gone leaves the holder's link up until the holder's
+// replication timeout passes, and the next attempt after that promotes.
 func (d *decision) startPromotion(ctx context.Context) {
 	d.st.promotionStarted = d.now
 	if d.r.Spec.Replica == nil {
@@ -116,8 +132,12 @@ func (d *decision) startPromotion(ctx context.Context) {
 	case answered:
 		d.waitForSource("SourceRefused", fmt.Sprintf("the source %s answered with an error (%s), so it is up and may still take writes", address, errorText(err)))
 		return
+	case err != nil && d.holderLinked():
+		d.waitForSource("SourceUnreachableFromOperator", fmt.Sprintf(
+			"the operator cannot reach the source to pause it (%s), but the holder replicates from it with its link up, so the source is up and may still take writes", errorText(err)))
+		return
 	case err != nil:
-		d.promote(fmt.Sprintf("the source could not be reached to pause it (%s), so the operator promoted without waiting", errorText(err)))
+		d.promote(fmt.Sprintf("neither the operator nor the holder could reach the source (%s), so the operator promoted without waiting", errorText(err)))
 		return
 	}
 	defer conn.Close()

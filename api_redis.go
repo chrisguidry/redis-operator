@@ -74,11 +74,15 @@ type RedisStatus struct {
 	// CurrentPrimary is the instance that holds the primary Lease. It is
 	// empty until the first primary takes the Lease, which tells an
 	// instance with no data that it may start the dataset.
-	CurrentPrimary string            `json:"currentPrimary,omitempty"`
-	ReadyInstances int               `json:"readyInstances,omitempty"`
-	Instances      []InstanceStatus  `json:"instances,omitempty"`
-	Switchover     *SwitchoverStatus `json:"switchover,omitempty"`
-	Replica        *ReplicaStatus    `json:"replica,omitempty"`
+	CurrentPrimary string `json:"currentPrimary,omitempty"`
+	ReadyInstances int    `json:"readyInstances,omitempty"`
+	// MinReplicasToWrite is the min-replicas-to-write the primary runs
+	// with. The operator raises it toward the spec's only as far as
+	// replicas have synced (reconcile_writes.go).
+	MinReplicasToWrite *int              `json:"minReplicasToWrite,omitempty"`
+	Instances          []InstanceStatus  `json:"instances,omitempty"`
+	Switchover         *SwitchoverStatus `json:"switchover,omitempty"`
+	Replica            *ReplicaStatus    `json:"replica,omitempty"`
 	// Image is the image every instance runs, and Rollout a change to
 	// another that is under way or failed.
 	Image      string         `json:"image,omitempty"`
@@ -148,6 +152,16 @@ func (s RedisSpec) minReplicasToWrite() int {
 		return 1
 	}
 	return 0
+}
+
+// minReplicasToWrite is the min-replicas-to-write the primary runs
+// with: the operator's status.minReplicasToWrite once it wrote one, and
+// the spec's before.
+func (r Redis) minReplicasToWrite() int {
+	if r.Status.MinReplicasToWrite != nil {
+		return *r.Status.MinReplicasToWrite
+	}
+	return r.Spec.minReplicasToWrite()
 }
 
 func (s RedisSpec) persistent() bool {

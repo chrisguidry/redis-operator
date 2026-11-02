@@ -32,6 +32,9 @@ spec:
       sentinel:                  # optional; follow whichever primary these name
         masterName: mymaster
         addresses: ["old-sentinel-0.example.svc:26379"]
+        password:                # optional; the sentinels' own requirepass
+          secret: old-sentinel
+          key: password
 status:
   replica:
     phase: Replicating           # Replicating | Promoting | Promoted
@@ -57,7 +60,9 @@ While `status.replica.phase` is `Replicating`:
   with the source's password, which it reads from the named Secret. A
   source named by hostname is followed by its IP address. With a
   Sentinel source, it asks the sentinels for the primary every step
-  and follows each move.
+  and follows each move. It authenticates to the sentinels with
+  `sentinel.password` when the spec names one. Sentinel's `requirepass`
+  is a setting of its own, separate from the data password.
 - The other instances follow the Lease holder, as they always do, so
   they replicate from the source through it.
 - The `-rw` Service has no endpoint that accepts writes: the holder is
@@ -79,13 +84,31 @@ Setting `enabled: false` promotes, in this order:
 1. The operator pauses writes on the source with
    `CLIENT PAUSE 30000 WRITE`, so nothing changes there while the
    replica catches up, then writes `phase: Promoting`.
-2. It waits until the holder's offset reaches the source's. If the
-   source cannot be reached, it promotes at once without waiting, which
-   is the disaster-recovery case, and says so in the condition
-   `Adopted`. If the source is reachable but refuses `CLIENT PAUSE`, it
+2. It waits until the holder's offset reaches the source's. If neither
+   the operator nor the holder can reach the source, it promotes at
+   once without waiting, which is the disaster-recovery case, and says
+   so in the condition `Adopted`. If the operator cannot reach the
+   source, or its sentinels, but the holder reports its replication
+   link to the source up, the source is alive and may still take
+   writes: a NetworkPolicy that admits the Redis pods and not the
+   operator, or a name that resolves only from the `Redis`'s
+   namespace, looks the same to the operator as a source that is down.
+   The operator does not promote then. `Adopted` is `False` with the
+   reason `SourceUnreachableFromOperator`, and the operator tries again
+   after the switchover backoff. A source whose process stops closes
+   the holder's link, which then reads down at once. A source whose
+   machine is gone leaves the link up until the holder's own
+   `repl-timeout` passes, 60 seconds by default, and the promotion
+   follows on the next attempt after that.
+   If the source is reachable but refuses `CLIENT PAUSE`, it
    does not promote: `Adopted` is `False` with the reason `PauseRefused`,
    and the operator tries again after the switchover backoff of 30
-   seconds.
+   seconds. The same holds, with the reason `SourceRefused`, for a
+   source that answers the connection with an error, such as a wrong
+   password, and, with the reason `PasswordUnreadable`, when the
+   operator cannot read the source's password Secret or the sentinels'.
+   Each of these messages ends with "To promote without pausing the
+   source, remove spec.replica".
    If the holder has not reached the source's offset when the pause is
    nearly over (25 seconds in), the operator does not promote either. It
    writes `phase: Replicating`, sets `Adopted` to `False` with the
@@ -99,10 +122,16 @@ Setting `enabled: false` promotes, in this order:
    that still write to the source get writes accepted there after the
    cutover, so they must move to `<name>-rw` before the pause ends.
 
-Removing `spec.replica` while replicating promotes at once, with no
-pause, because the operator no longer knows the source. This is the way
-to force a promotion that keeps timing out, and it can lose writes the
-source accepted after the holder's offset.
+`enabled: false` and removing `spec.replica` are different edits.
+`enabled: false` promotes with the source paused and the holder caught
+up, as above. Removing `spec.replica` while replicating promotes at
+once, with no pause and no wait, because the spec no longer names the
+source. `Adopted` is `True` with the message "spec.replica was
+removed, so the operator promoted without pausing the source". Writes
+the source accepted after the holder's offset are lost, and so are
+writes that clients still send to the source afterward. This is the way
+to force a promotion that keeps timing out, with the source's clients
+stopped first.
 
 ## Limits
 
@@ -113,7 +142,8 @@ source accepted after the holder's offset.
 ## Tests
 
 - The instance manager following a real source server, with and without
-  a password, and through a real Sentinel.
+  a password, and through a real Sentinel with and without its own
+  `requirepass`.
 - The operator's promotion sequence against the fake API server and a
   real source server: the pause, the catch-up, and the promotion.
 - End to end: a Redis outside the operator under the writer's load,

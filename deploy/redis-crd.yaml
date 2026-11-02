@@ -211,6 +211,12 @@ spec:
                               type: array
                               minItems: 1
                               items: {type: string}
+                            password:
+                              type: object
+                              required: [secret, key]
+                              properties:
+                                secret: {type: string}
+                                key: {type: string}
             status:
               type: object
               properties:
@@ -221,6 +227,8 @@ spec:
                 currentPrimary:
                   type: string
                 readyInstances:
+                  type: integer
+                minReplicasToWrite:
                   type: integer
                 instances:
                   type: array

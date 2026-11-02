@@ -241,12 +241,14 @@ func (f *fakeKube) applyObject(key fakeKey, before, applied map[string]any, mana
 // deletionTimestamp and stays until the last finalizer is gone. A uid
 // or resourceVersion in the body's preconditions that is not the
 // object's gets 409, as the API server answers a delete of an object
-// made again under the same name, or changed since it was read.
+// made again under the same name, or changed since it was read. A uid
+// that is present and empty is a uid too, as the API server reads it,
+// and matches no object.
 func (f *fakeKube) serveDelete(w http.ResponseWriter, key fakeKey, body []byte) {
 	var options struct {
 		Preconditions struct {
-			UID             string `json:"uid"`
-			ResourceVersion string `json:"resourceVersion"`
+			UID             *string `json:"uid"`
+			ResourceVersion string  `json:"resourceVersion"`
 		} `json:"preconditions"`
 	}
 	_ = json.Unmarshal(body, &options)
@@ -257,8 +259,8 @@ func (f *fakeKube) serveDelete(w http.ResponseWriter, key fakeKey, body []byte) 
 		writeKubeStatus(w, http.StatusNotFound, key.name+" not found")
 		return
 	}
-	if uid := options.Preconditions.UID; uid != "" && uid != metadataOf(before)["uid"] {
-		writeKubeStatus(w, http.StatusConflict, "Precondition failed: UID in precondition: "+uid)
+	if uid := options.Preconditions.UID; uid != nil && *uid != metadataOf(before)["uid"] {
+		writeKubeStatus(w, http.StatusConflict, "Precondition failed: UID in precondition: "+*uid)
 		return
 	}
 	if version := options.Preconditions.ResourceVersion; version != "" && version != metadataOf(before)["resourceVersion"] {

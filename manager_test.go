@@ -84,6 +84,21 @@ func (h *managerHarness) setTarget(target string) {
 	})
 }
 
+// switchTo starts a switchover from the holder to target, as the
+// operator does: the target, and status.switchover.
+func (h *managerHarness) switchTo(target string) {
+	from := h.holder()
+	h.api.update(redisResource, testNamespace, h.name, func(object map[string]any) {
+		status, _ := object["status"].(map[string]any)
+		if status == nil {
+			status = map[string]any{}
+		}
+		status["targetPrimary"] = target
+		status["switchover"] = map[string]any{"from": from, "to": target, "reason": "Test"}
+		object["status"] = status
+	})
+}
+
 // setCurrentPrimary writes status.currentPrimary, as the operator does
 // once a primary holds the Lease.
 func (h *managerHarness) setCurrentPrimary(name string) {
@@ -109,6 +124,7 @@ func (h *managerHarness) start(name, dir string) {
 		leaseDuration: 1500 * time.Millisecond, renewDeadline: time.Second,
 		retryPeriod: 200 * time.Millisecond, stepPeriod: 100 * time.Millisecond,
 		failoverTimeout: 3 * time.Second, handoverWait: 3 * time.Second,
+		demotionHold: 5 * time.Second, routeSettle: 500 * time.Millisecond,
 	}, h.api.client, &syncBuffer{})
 	stop, cancel := context.WithCancel(context.Background())
 	running := &runningManager{manager: m, stop: cancel, done: make(chan error, 1), dir: dir}
@@ -193,6 +209,13 @@ func TestTheTargetTakesTheLeaseAndServesAsPrimary(t *testing.T) {
 	mustSucceed(t, err)
 }
 
+func TestThePrimaryReportsTheReplicasItStreamsTo(t *testing.T) {
+	h := twoInstances(t, "redis")
+
+	h.waitFor("cache-0 reports one synced replica", func() bool { return h.report("cache-0").SyncedReplicas == 1 })
+	mustMatch(t, h.report("cache-1").SyncedReplicas, 0)
+}
+
 func TestAnInstanceThatIsNotTheTargetFollowsTheHolder(t *testing.T) {
 	for _, engine := range engines {
 		t.Run(engine, func(t *testing.T) {
@@ -218,8 +241,10 @@ func twoInstances(t *testing.T, engine string) *managerHarness {
 	h.setTarget("cache-0")
 	h.start("cache-0", "")
 	h.start("cache-1", "")
-	h.waitFor("cache-1 replicates cache-0", func() bool {
-		return h.report("cache-1").LinkUp && h.report("cache-0").Ready
+	// The replica's link comes up before the primary counts it toward
+	// min-replicas-to-write, so the wait is for the primary's count.
+	h.waitFor("cache-0 streams to cache-1", func() bool {
+		return h.report("cache-1").LinkUp && h.report("cache-0").Ready && h.report("cache-0").SyncedReplicas == 1
 	})
 	h.setCurrentPrimary("cache-0")
 	_, err := h.client("cache-0").do(context.Background(), "SET", "key", "value")
@@ -232,7 +257,7 @@ func TestMovingTheTargetHandsThePrimaryRoleOver(t *testing.T) {
 		t.Run(engine, func(t *testing.T) {
 			h := twoInstances(t, engine)
 
-			h.setTarget("cache-1")
+			h.switchTo("cache-1")
 
 			h.waitFor("cache-1 holds the lease as a ready primary", func() bool {
 				return h.holder() == "cache-1" && h.report("cache-1").Ready && h.report("cache-1").Role == reportPrimary
@@ -337,7 +362,7 @@ func TestAStoppingPrimaryAsksForASwitchoverAndHandsOver(t *testing.T) {
 		var pod Pod
 		return h.api.read(podsResource, testNamespace, "cache-0", &pod) && pod.Metadata.Annotations[switchoverAnnotation] != ""
 	})
-	h.setTarget("cache-1")
+	h.switchTo("cache-1")
 
 	<-stopped
 	h.waitFor("cache-1 holds the lease as a ready primary", func() bool {

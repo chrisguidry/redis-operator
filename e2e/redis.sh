@@ -20,18 +20,19 @@ YAML
   wait_ready 180
 }
 
-# wait_ready waits until the Redis reports Ready with every instance
-# ready.
+# wait_ready waits until the Redis reports Ready with as many ready
+# instances as its spec names.
 wait_ready() {
   retry "the Redis being ready" "$1" redis_ready
 }
 
 redis_ready() {
-  local ready status
+  local want ready status
+  want=$(kubectl -n "$NS" get redis cache -o jsonpath='{.spec.instances}')
   ready=$(kubectl -n "$NS" get redis cache -o jsonpath='{.status.readyInstances}')
   status=$(kubectl -n "$NS" get redis cache -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')
-  echo "readyInstances=$ready Ready=$status"
-  [ "$ready" = 3 ] && [ "$status" = True ]
+  echo "instances=$want readyInstances=$ready Ready=$status"
+  [ "$ready" = "$want" ] && [ "$status" = True ]
 }
 
 primary() {
@@ -42,6 +43,14 @@ primary() {
 # cache-rw, and confirms each increment with WAIT 1 on the same
 # connection. It prints each value a replica acknowledged, so the
 # values in its log are the writes the client was told are safe.
+#
+# Its second container, held, writes through one connection that it
+# keeps for as long as the server does, as an application's client
+# does, and logs every reply. Like an application's client, it gives
+# up a connect after a timeout, so a connect that kube-proxy sends to a
+# pod that is gone does not hang it. A server that stops being primary
+# must close that connection rather than answer READONLY, so its log is
+# how the scenarios check what a client sees across a role change.
 start_writer() {
   log "starting the writer"
   kubectl -n "$NS" apply -f - >/dev/null <<YAML
@@ -49,6 +58,8 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: writer
+  annotations:
+    kubectl.kubernetes.io/default-container: writer
 spec:
   ${WRITER_NODE:+nodeName: $WRITER_NODE}
   restartPolicy: Never
@@ -74,6 +85,21 @@ spec:
             esac
             sleep 0.05
           done
+    - name: held
+      image: $SERVER_IMAGE
+      env:
+        - name: REDISCLI_AUTH
+          valueFrom: {secretKeyRef: {name: cache-app, key: password}}
+      command:
+        - sh
+        - -c
+        - |
+          cli=redis-cli
+          command -v valkey-cli >/dev/null && cli=valkey-cli
+          while true; do
+            while true; do echo "INCR held"; sleep 0.05; done | \$cli -t 2 -h cache-rw 2>&1
+            sleep 1
+          done
 YAML
   kubectl -n "$NS" wait --for=condition=Ready pod/writer --timeout=60s >/dev/null
   retry "the writer confirming writes" 60 writer_confirmed_some
@@ -81,6 +107,12 @@ YAML
 
 writer_confirmed_some() {
   [ -n "$(kubectl -n "$NS" logs writer --tail=1 2>/dev/null)" ]
+}
+
+# held_replies counts the replies in the held writer's log that match
+# a pattern.
+held_replies() {
+  kubectl -n "$NS" logs writer -c held 2>/dev/null | grep -c "$1" || true
 }
 
 max_confirmed() {
@@ -101,11 +133,20 @@ assert_no_confirmed_write_lost() {
   local before
   before=$(max_confirmed)
   retry "the writer confirming new writes after $1" 90 confirmed_past "$before"
-  local confirmed current
+  assert_counter_kept "$1"
+}
+
+# assert_counter_kept checks that the counter is at least every value a
+# replica confirmed, and that no write on the held connection was
+# answered READONLY.
+assert_counter_kept() {
+  local confirmed current readonly
   confirmed=$(max_confirmed)
   current=$(counter)
-  log "$1: counter $current, highest confirmed $confirmed"
+  readonly=$(held_replies READONLY)
+  log "$1: counter $current, highest confirmed $confirmed, READONLY replies $readonly"
   [ "$current" -ge "$confirmed" ] || die "$1 lost confirmed writes: the counter is $current, and $confirmed was confirmed"
+  [ "$readonly" = 0 ] || die "$1: a client that kept its connection was answered READONLY $readonly times"
 }
 
 confirmed_past() {

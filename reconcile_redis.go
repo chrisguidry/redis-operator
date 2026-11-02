@@ -66,22 +66,25 @@ func (c *controller) reconcile(ctx context.Context, r *Redis, w *world) error {
 	} else if st.leaderlessSince.IsZero() {
 		st.leaderlessSince = now
 	}
-	if err := c.labelRoles(ctx, pods, holder); err != nil {
-		return err
-	}
 
 	d := decision{c: c, r: r, st: st, status: &status, pods: byName, holder: holder, now: now, nodes: w.nodes}
 	d.replica(ctx)
-	if r.Spec.instances() > 1 {
+	// A Redis scaling down to one instance still has replicas to switch
+	// over to until the StatefulSet shrinks.
+	if r.Spec.instances() > 1 || len(pods) > 1 {
 		d.failover()
 		d.switchover(w.statefulSets[key].Status.UpdateRevision)
 	}
+	d.minReplicasToWrite()
 	d.rollout(w.statefulSets[key].Status.UpdateRevision)
 	if err := c.roll(ctx, &d, w.statefulSets[key].Status.UpdateRevision); err != nil {
 		return err
 	}
 	d.summarize(pods)
-	return c.writeStatus(ctx, r, status)
+	if err := c.writeStatus(ctx, r, status); err != nil {
+		return err
+	}
+	return c.labelRoles(ctx, pods, holder, status.TargetPrimary)
 }
 
 // decision carries one pass's read of a Redis, and the status it
@@ -228,6 +231,8 @@ func (d *decision) switchover(updateRevision string) {
 		reason = reasonPodDeleted
 	case d.nodes[primary.Spec.NodeName].Spec.Unschedulable:
 		reason = reasonNodeCordoned
+	case !d.staysAfterScaling(d.holder):
+		reason = reasonScaleDown
 	case updateRevision != "" && primary.Metadata.Labels[revisionLabel] != updateRevision && d.othersUpdated(updateRevision) &&
 		(d.status.Rollout == nil || d.status.Rollout.Phase != rolloutCanary):
 		reason = reasonRollout
@@ -260,13 +265,14 @@ func (d *decision) othersUpdated(updateRevision string) bool {
 }
 
 // bestReplica is the ready replica on a schedulable node that follows
-// the primary with its link up and the highest offset. A rollout takes
-// only a replica on the update revision.
+// the primary with its link up and the highest offset, among the
+// instances a scale-down keeps. A rollout takes only a replica on the
+// update revision.
 func (d *decision) bestReplica(updatedOnly bool, updateRevision string) string {
 	primaryIP := d.pods[d.holder].Status.PodIP
 	best, bestOffset := "", int64(-1)
 	for name, pod := range d.pods {
-		if name == d.holder || !pod.ready() || pod.Metadata.DeletionTimestamp != "" {
+		if name == d.holder || !pod.ready() || pod.Metadata.DeletionTimestamp != "" || !d.staysAfterScaling(name) {
 			continue
 		}
 		if d.nodes[pod.Spec.NodeName].Spec.Unschedulable || pod.Metadata.Annotations[switchoverAnnotation] != "" {
@@ -339,13 +345,18 @@ func (c *controller) roll(ctx context.Context, d *decision, updateRevision strin
 	return nil
 }
 
-// labelRoles writes the role label on each pod from the Lease: primary
-// on the holder, replica on the rest. The Services and the budgets
-// select on it.
-func (c *controller) labelRoles(ctx context.Context, pods []Pod, holder string) error {
+// labelRoles writes the role label on each pod from the Lease and the
+// decision: primary on the holder while it is also the target, replica
+// on the rest. The Services and the budgets select on it. Once the
+// target names another instance, or a failover is pending, the holder
+// loses the label before its manager steps down, so the <name>-rw
+// Service stops sending clients to a server that is about to refuse
+// writes (manager_demote.go). It runs after the status write, so a
+// decision that did not land moves no label.
+func (c *controller) labelRoles(ctx context.Context, pods []Pod, holder, target string) error {
 	for _, pod := range pods {
 		want := roleReplica
-		if pod.Metadata.Name == holder {
+		if pod.Metadata.Name == holder && holder == target {
 			want = rolePrimary
 		}
 		if pod.Metadata.Labels[roleLabel] == want {
@@ -394,6 +405,8 @@ func (d *decision) summarize(pods []Pod) {
 		d.setCondition(readyCondition, ConditionTrue, "SwitchoverInProgress", fmt.Sprintf("moving the primary from %s to %s", d.status.Switchover.From, d.status.Switchover.To))
 	case ready < want:
 		d.setCondition(readyCondition, ConditionFalse, "InstancesNotReady", fmt.Sprintf("%d of %d instances are ready", ready, want))
+	case len(pods) > want:
+		d.setCondition(readyCondition, ConditionTrue, "ScalingDown", fmt.Sprintf("%s is primary, and the instances beyond %d are being removed", d.holder, want))
 	default:
 		d.setCondition(readyCondition, ConditionTrue, "AllInstancesReady", fmt.Sprintf("%s is primary, and %d of %d instances are ready", d.holder, ready, want))
 	}

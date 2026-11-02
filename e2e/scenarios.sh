@@ -90,6 +90,53 @@ scenario_rollout() {
   assert_no_confirmed_write_lost "rolling a change"
 }
 
+# scenario_scale scales the Redis from three instances to one while the
+# primary is not cache-0, so the operator must switch over to cache-0
+# before the StatefulSet shrinks, and then back to three, which must
+# not refuse a write while the new replicas sync.
+scenario_scale() {
+  if [ "$(primary)" = cache-0 ]; then
+    log "scenario: delete the primary cache-0, so that scaling down has to move the primary"
+    kubectl -n "$NS" delete pod cache-0 --wait=false >/dev/null
+    retry "a new primary" 120 primary_is_not cache-0
+    wait_ready 180
+  fi
+  log "scenario: scale from three instances to one while $(primary) is primary"
+  kubectl -n "$NS" patch redis cache --type=merge -p '{"spec":{"instances":1}}' >/dev/null
+  retry "the primary moving to cache-0" 120 primary_is cache-0
+  retry "one pod left" 120 pod_count_is 1
+  wait_ready 180
+  retry "the held writer writing to cache-0" 60 held_writes_after "$(held_replies '^[0-9]')"
+  assert_counter_kept "scaling to one instance"
+
+  local refused
+  refused=$(held_replies NOREPLICAS)
+  log "scenario: scale from one instance to three"
+  kubectl -n "$NS" patch redis cache --type=merge -p '{"spec":{"instances":3}}' >/dev/null
+  wait_ready 180
+  assert_no_confirmed_write_lost "scaling to three instances"
+  [ "$(held_replies NOREPLICAS)" = "$refused" ] ||
+    die "scaling up refused writes: the held writer saw $(($(held_replies NOREPLICAS) - refused)) NOREPLICAS replies"
+}
+
+primary_is() {
+  local now
+  now=$(primary)
+  echo "primary: $now"
+  [ "$now" = "$1" ]
+}
+
+pod_count_is() {
+  local pods
+  pods=$(kubectl -n "$NS" get pods -l redis.guid.foo/cluster=cache -o name)
+  echo "$pods"
+  [ "$(echo "$pods" | grep -c .)" = "$1" ]
+}
+
+held_writes_after() {
+  [ "$(held_replies '^[0-9]')" -gt "$1" ]
+}
+
 # signal_instance sends a signal to the instance manager and the server
 # on node. Each node runs one instance, by the pods' anti-affinity. The
 # k3s image has no pkill, so this reads each process's command line.

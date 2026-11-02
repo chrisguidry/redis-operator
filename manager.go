@@ -50,6 +50,12 @@ const (
 	// handoverWait is how long a primary that is being deleted waits
 	// for the operator to name the next primary before it stops anyway.
 	handoverWait = 20 * time.Second
+	// demotionHold is the longest a demoted primary holds its clients'
+	// writes waiting for its pod to lose the primary label, and
+	// routeSettle how long kube-proxy may take to stop routing to it
+	// after that (manager_demote.go).
+	demotionHold = 30 * time.Second
+	routeSettle  = 5 * time.Second
 	statusPort   = 9123
 	serverPort   = 6379
 )
@@ -63,6 +69,9 @@ type managerConfig struct {
 	podIP      string
 	port       int
 	statusPort int
+	// loopback is whether the server also listens on 127.0.0.1. Tests
+	// leave it off, because their instances share one port on one host.
+	loopback   bool
 	dataDir    string
 	configPath string
 	password   string
@@ -77,6 +86,8 @@ type managerConfig struct {
 	stepPeriod      time.Duration
 	failoverTimeout time.Duration
 	handoverWait    time.Duration
+	demotionHold    time.Duration
+	routeSettle     time.Duration
 }
 
 // instanceReport is what an instance manager says about itself at
@@ -93,7 +104,9 @@ type instanceReport struct {
 	HasData    bool   `json:"hasData"`
 	Ready      bool   `json:"ready"`
 	Stopping   bool   `json:"stopping,omitempty"`
-	Error      string `json:"error,omitempty"`
+	// SyncedReplicas is how many replicas a primary streams to.
+	SyncedReplicas int    `json:"syncedReplicas,omitempty"`
+	Error          string `json:"error,omitempty"`
 }
 
 // The roles a report names.
@@ -113,8 +126,11 @@ type manager struct {
 	peers   *http.Client
 	persist bool
 
-	// What the last step read from the API server.
+	// What the last step read from the API server. switchingOver is
+	// whether the operator moved the target with a switchover, and not
+	// a failover.
 	target         string
+	switchingOver  bool
 	everHadPrimary bool
 	minReplicas    int
 	podIPs         map[string]string
@@ -125,6 +141,12 @@ type manager struct {
 	stopStarted   time.Time
 	askedHandover bool
 	lastLine      string
+	// labeledPrimary is whether the last read of this pod found the
+	// primary role label. leaving and demoted are the step-downs whose
+	// clients the manager still has to disconnect (manager_demote.go).
+	labeledPrimary bool
+	leaving        *leaving
+	demoted        *demotion
 
 	// backupBusy is true while a snapshot runs in the background.
 	backupBusy atomic.Bool
@@ -269,6 +291,7 @@ func (m *manager) settings(redis Redis) (serverSettings, error) {
 	return serverSettings{
 		engine:             redis.Spec.engine(),
 		bindIP:             m.config.podIP,
+		loopback:           m.config.loopback,
 		port:               m.config.port,
 		dataDir:            m.config.dataDir,
 		configPath:         m.config.configPath,
@@ -349,6 +372,9 @@ func (m *manager) step(ctx context.Context) {
 	// left behind.
 	if after, err := m.server.replication(ctx); err == nil {
 		info = after
+		if err := m.disconnectDemotedClients(ctx, now, apiErr, info); err != nil {
+			m.say(fmt.Sprintf("%s: disconnecting the clients of the demoted primary: %s", m.config.podName, errorText(err)))
+		}
 	}
 	m.setReport(m.reportFrom(info, actErr))
 }
@@ -359,8 +385,9 @@ func (m *manager) readDecision(ctx context.Context, now time.Time) error {
 		return err
 	}
 	m.target = redis.Status.TargetPrimary
+	m.switchingOver = redis.Status.Switchover != nil
 	m.everHadPrimary = redis.Status.CurrentPrimary != ""
-	m.minReplicas = redis.Spec.minReplicasToWrite()
+	m.minReplicas = redis.minReplicasToWrite()
 	m.replicaMode = redis.Status.replicating() && redis.Spec.Replica != nil
 	if redis.Spec.Replica != nil {
 		m.replicaSource = redis.Spec.Replica.Source
@@ -375,9 +402,13 @@ func (m *manager) readDecision(ctx context.Context, now time.Time) error {
 		return err
 	}
 	ips := map[string]string{}
+	m.labeledPrimary = false
 	for _, pod := range pods.Items {
 		if pod.Status.PodIP != "" {
 			ips[pod.Metadata.Name] = pod.Status.PodIP
+		}
+		if pod.Metadata.Name == m.config.podName {
+			m.labeledPrimary = pod.Metadata.Labels[roleLabel] == rolePrimary
 		}
 	}
 	m.podIPs = ips
@@ -415,6 +446,9 @@ func (m *manager) stepAsHolder(ctx context.Context, now time.Time, apiErr error,
 		if m.replicaMode {
 			return m.followSource(ctx, info)
 		}
+		if err := m.resumeWrites(ctx); err != nil {
+			return err
+		}
 		if err := m.setMasterauth(ctx, m.config.password); err != nil {
 			return err
 		}
@@ -425,22 +459,35 @@ func (m *manager) stepAsHolder(ctx context.Context, now time.Time, apiErr error,
 		return m.server.setMinReplicasToWrite(ctx, m.minReplicas)
 	case targetPending, "":
 		m.line(m.config.podName + ": stepping down, a failover is pending")
-		if err := m.server.detach(ctx, info, m.config.port); err != nil {
-			return err
-		}
-		if err := m.server.killClients(ctx); err != nil {
-			return err
-		}
-		return m.lease.release(ctx, now)
+		return m.stepDownForFailover(ctx, now, info)
 	default:
-		return m.handOver(ctx, now)
+		if !m.switchingOver && !m.replicaMode {
+			// A failover named the next primary while this instance, which
+			// the API server still reaches, held the Lease. Its replicas
+			// detached for the failover, and may not reach it at all, so a
+			// FAILOVER to the next primary could never finish.
+			m.line(fmt.Sprintf("%s: stepping down, a failover named %s", m.config.podName, m.target))
+			return m.stepDownForFailover(ctx, now, info)
+		}
+		return m.handOver(ctx, now, info)
 	}
 }
 
-// handOver moves the primary role to the target with FAILOVER, then
-// releases the Lease. An aborted FAILOVER leaves this instance primary,
-// and the operator gives the switchover up.
-func (m *manager) handOver(ctx context.Context, now time.Time) error {
+// stepDownForFailover detaches the server once routing has moved off
+// this pod, then releases the Lease.
+func (m *manager) stepDownForFailover(ctx context.Context, now time.Time, info replicationInfo) error {
+	detached, err := m.stepDown(ctx, now, info, func() error { return m.server.detach(ctx, info, m.config.port) })
+	if !detached {
+		return err
+	}
+	return m.lease.release(ctx, now)
+}
+
+// handOver moves the primary role to the target with FAILOVER, once
+// routing has moved off this pod, then releases the Lease. An aborted
+// FAILOVER leaves this instance primary, and the operator gives the
+// switchover up.
+func (m *manager) handOver(ctx context.Context, now time.Time, info replicationInfo) error {
 	if m.replicaMode {
 		// The holder is a replica of the source, so there is no primary
 		// role to hand over: the next holder follows the source itself.
@@ -451,12 +498,15 @@ func (m *manager) handOver(ctx context.Context, now time.Time) error {
 	if ip == "" {
 		return fmt.Errorf("cannot hand the primary role to %s: its pod has no IP", m.target)
 	}
-	m.say(fmt.Sprintf("%s: handing the primary role to %s", m.config.podName, m.target))
-	if err := m.server.failoverTo(ctx, ip, m.config.port, m.config.failoverTimeout); err != nil {
+	handed, err := m.stepDown(ctx, now, info, func() error {
+		m.say(fmt.Sprintf("%s: handing the primary role to %s", m.config.podName, m.target))
+		return m.server.failoverTo(ctx, ip, m.config.port, m.config.failoverTimeout)
+	})
+	if err != nil {
 		return fmt.Errorf("handing the primary role to %s: %w", m.target, err)
 	}
-	if err := m.server.killClients(ctx); err != nil {
-		return err
+	if !handed {
+		return nil
 	}
 	return m.lease.release(ctx, time.Now())
 }
@@ -478,10 +528,7 @@ func (m *manager) isolationCheck(ctx context.Context, info replicationInfo) erro
 		return nil
 	}
 	m.line(m.config.podName + ": cannot renew the primary lease and a peer disagrees or is unreachable; fencing")
-	if err := m.server.detach(ctx, info, m.config.port); err != nil {
-		return err
-	}
-	return m.server.killClients(ctx)
+	return m.demote(ctx, info, func() error { return m.server.detach(ctx, info, m.config.port) })
 }
 
 // peersAgree asks every other instance's manager which instance it
@@ -532,16 +579,16 @@ func (m *manager) stepAsOther(ctx context.Context, now time.Time, info replicati
 		return nil
 	case m.target == targetPending:
 		m.line(m.config.podName + ": detached, a failover is pending")
-		return m.server.detach(ctx, info, m.config.port)
+		return m.demote(ctx, info, func() error { return m.server.detach(ctx, info, m.config.port) })
 	case holder != "" && holder != m.config.podName && m.podIPs[holder] != "":
 		if err := m.setMasterauth(ctx, m.config.password); err != nil {
 			return err
 		}
 		m.line(m.config.podName + ": following " + holder)
-		return m.server.follow(ctx, info, m.podIPs[holder], m.config.port)
+		return m.demote(ctx, info, func() error { return m.server.follow(ctx, info, m.podIPs[holder], m.config.port) })
 	default:
 		m.line(m.config.podName + ": detached, no primary holds the lease")
-		return m.server.detach(ctx, info, m.config.port)
+		return m.demote(ctx, info, func() error { return m.server.detach(ctx, info, m.config.port) })
 	}
 }
 
@@ -559,6 +606,7 @@ func (m *manager) reportFrom(info replicationInfo, err error) instanceReport {
 	case info.role == "master":
 		report.Role = reportPrimary
 		report.Ready = report.HoldsLease
+		report.SyncedReplicas = info.onlineReplicas
 	case info.masterHost == detachedHost:
 		report.Role = reportDetached
 	default:

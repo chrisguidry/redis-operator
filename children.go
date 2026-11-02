@@ -19,11 +19,14 @@ var (
 	budgetsResource         = kubeResource{"policy", "v1", "poddisruptionbudgets"}
 )
 
-// child is one object to apply: where it goes, and its body.
+// child is one object to apply, or to delete when remove is true: an
+// object the Redis needs only for some specs, such as the budget on the
+// primary, which a single instance must not have.
 type child struct {
 	resource kubeResource
 	name     string
 	body     map[string]any
+	remove   bool
 }
 
 func ownerOf(r *Redis) OwnerReference {
@@ -50,8 +53,8 @@ func secretName(redis string) string { return redis + "-app" }
 
 // children lists every object for r except its Secret, which the
 // operator creates once and never rewrites, because it holds the
-// password.
-func children(r *Redis, operatorImage string, secrets []string, restore *BackupVolume) []child {
+// password. replicas is the StatefulSet's scale (reconcile_scale.go).
+func children(r *Redis, operatorImage string, secrets []string, restore *BackupVolume, replicas int) []child {
 	name := r.Metadata.Name
 	rules := []map[string]any{
 		{"apiGroups": []string{apiGroup}, "resources": []string{"redis"}, "resourceNames": []string{name}, "verbs": []string{"get"}},
@@ -68,17 +71,17 @@ func children(r *Redis, operatorImage string, secrets []string, restore *BackupV
 		rules = append(rules, map[string]any{"apiGroups": []string{""}, "resources": []string{"secrets"}, "resourceNames": secrets, "verbs": []string{"get"}})
 	}
 	list := []child{
-		{serviceAccountsResource, name, map[string]any{
+		{resource: serviceAccountsResource, name: name, body: map[string]any{
 			"apiVersion": "v1", "kind": "ServiceAccount", "metadata": childMeta(r, name, nil),
 		}},
-		{rolesResource, name, map[string]any{
+		{resource: rolesResource, name: name, body: map[string]any{
 			"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role", "metadata": childMeta(r, name, nil),
 			// What an instance manager reads and writes: its Redis, the
 			// primary Lease, the pods of its Redis, whose IPs it follows
 			// and whose annotation asks for a switchover, and its backups.
 			"rules": rules,
 		}},
-		{roleBindingsResource, name, map[string]any{
+		{resource: roleBindingsResource, name: name, body: map[string]any{
 			"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding", "metadata": childMeta(r, name, nil),
 			"roleRef":  map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": name},
 			"subjects": []map[string]any{{"kind": "ServiceAccount", "name": name, "namespace": r.Metadata.Namespace}},
@@ -86,7 +89,7 @@ func children(r *Redis, operatorImage string, secrets []string, restore *BackupV
 		service(r, name+"-rw", map[string]string{clusterLabel: name, roleLabel: rolePrimary}, false),
 		service(r, name+"-ro", map[string]string{clusterLabel: name, roleLabel: roleReplica}, false),
 		service(r, name+"-nodes", map[string]string{clusterLabel: name}, true),
-		{budgetsResource, name + "-replicas", map[string]any{
+		{resource: budgetsResource, name: name + "-replicas", body: map[string]any{
 			"apiVersion": "policy/v1", "kind": "PodDisruptionBudget", "metadata": childMeta(r, name+"-replicas", nil),
 			// One replica may go at a time. The budget states how many
 			// must stay, because the disruption controller counts a
@@ -97,19 +100,19 @@ func children(r *Redis, operatorImage string, secrets []string, restore *BackupV
 				"selector":     map[string]any{"matchLabels": map[string]string{clusterLabel: name, roleLabel: roleReplica}},
 			},
 		}},
-		statefulSet(r, operatorImage, restore),
-	}
-	if r.Spec.instances() > 1 {
+		statefulSet(r, operatorImage, restore, replicas),
 		// An eviction cannot take the primary. The operator switches over
 		// when the primary's node is cordoned, and the old primary is
-		// then a replica that this budget does not cover.
-		list = append(list, child{budgetsResource, name + "-primary", map[string]any{
+		// then a replica that this budget does not cover. A single
+		// instance has nothing to switch to, and the budget would block
+		// every drain of its node, so it has none.
+		{resource: budgetsResource, name: name + "-primary", body: map[string]any{
 			"apiVersion": "policy/v1", "kind": "PodDisruptionBudget", "metadata": childMeta(r, name+"-primary", nil),
 			"spec": map[string]any{
 				"minAvailable": 1,
 				"selector":     map[string]any{"matchLabels": map[string]string{clusterLabel: name, roleLabel: rolePrimary}},
 			},
-		}})
+		}, remove: r.Spec.instances() <= 1},
 	}
 	return list
 }
@@ -123,12 +126,12 @@ func service(r *Redis, name string, selector map[string]string, headless bool) c
 		spec["clusterIP"] = "None"
 		spec["publishNotReadyAddresses"] = true
 	}
-	return child{servicesResource, name, map[string]any{
+	return child{resource: servicesResource, name: name, body: map[string]any{
 		"apiVersion": "v1", "kind": "Service", "metadata": childMeta(r, name, nil), "spec": spec,
 	}}
 }
 
-func statefulSet(r *Redis, operatorImage string, restore *BackupVolume) child {
+func statefulSet(r *Redis, operatorImage string, restore *BackupVolume, replicas int) child {
 	name := r.Metadata.Name
 	podLabels := map[string]string{clusterLabel: name}
 	env := []map[string]any{
@@ -195,7 +198,7 @@ func statefulSet(r *Redis, operatorImage string, restore *BackupVolume) child {
 		podSpec["priorityClassName"] = r.Spec.PriorityClassName
 	}
 	spec := map[string]any{
-		"replicas":    r.Spec.instances(),
+		"replicas":    replicas,
 		"serviceName": name + "-nodes",
 		// The operator decides which pod restarts and when, so a change
 		// rolls the replicas, switches over, then rolls the old primary.
@@ -216,8 +219,13 @@ func statefulSet(r *Redis, operatorImage string, restore *BackupVolume) child {
 			claim["storageClassName"] = r.Spec.Storage.StorageClassName
 		}
 		spec["volumeClaimTemplates"] = []map[string]any{{"metadata": map[string]any{"name": "data"}, "spec": claim}}
+		// An instance that a scale-down removes takes its volume with it.
+		// A later scale-up starts that instance empty, and it copies the
+		// primary's data in a full sync, as it would from stale data.
+		// Deleting the Redis leaves every volume.
+		spec["persistentVolumeClaimRetentionPolicy"] = map[string]any{"whenScaled": "Delete", "whenDeleted": "Retain"}
 	}
-	return child{statefulSetsResource, name, map[string]any{
+	return child{resource: statefulSetsResource, name: name, body: map[string]any{
 		"apiVersion": "apps/v1", "kind": "StatefulSet", "metadata": childMeta(r, name, nil), "spec": spec,
 	}}
 }

@@ -32,7 +32,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"os"
 	"time"
 )
 
@@ -72,11 +71,12 @@ type LeaseSpec struct {
 // candidateIdentity names this process in the Lease: the pod's
 // hostname, which is its name, and a random suffix, so two pods that
 // share a hostname, or a container that restarts in the same pod, are
-// never taken for the same holder.
-func candidateIdentity() string {
-	host, err := os.Hostname()
+// never taken for the same holder. A process with no hostname uses the
+// operator's name.
+func candidateIdentity(hostname func() (string, error)) string {
+	host, err := hostname()
 	if err != nil {
-		host = "healthchecks-operator"
+		host = "redis-operator"
 	}
 	suffix := make([]byte, 4)
 	_, _ = rand.Read(suffix)

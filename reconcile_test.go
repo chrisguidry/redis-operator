@@ -53,6 +53,9 @@ func TestTheSecretKeepsItsPasswordAcrossPasses(t *testing.T) {
 
 func TestTheRoleLabelsFollowTheLease(t *testing.T) {
 	h := startHarness(t, 3)
+	h.api.update(redisResource, testNamespace, "cache", func(object map[string]any) {
+		object["status"] = map[string]any{"targetPrimary": "cache-1"}
+	})
 	h.steady("cache-1", 3)
 
 	h.pass()
@@ -62,6 +65,39 @@ func TestTheRoleLabelsFollowTheLease(t *testing.T) {
 	mustMatch(t, h.redis().Status.CurrentPrimary, "cache-1")
 	ready := findReady(t, h.redis())
 	mustMatch(t, ready.Status, ConditionTrue)
+}
+
+func TestTheHolderLosesThePrimaryLabelInThePassThatMovesTheTarget(t *testing.T) {
+	moves := []struct {
+		name string
+		move func(h *harness)
+	}{
+		{"switchover", func(h *harness) {
+			h.api.update(nodesResource, "", "node-0", func(object map[string]any) {
+				object["spec"] = map[string]any{"unschedulable": true}
+			})
+			h.pass()
+		}},
+		{"failover", func(h *harness) {
+			h.silence("cache-0")
+			h.passFor(8*time.Second, 2*time.Second)
+		}},
+	}
+	for _, move := range moves {
+		t.Run(move.name, func(t *testing.T) {
+			h := startHarness(t, 3)
+			h.steady("cache-0", 3)
+			h.pass()
+			mustMatch(t, h.pod("cache-0").Metadata.Labels[roleLabel], rolePrimary)
+
+			move.move(h)
+
+			mustMatch(t, h.redis().Status.TargetPrimary != "cache-0", true)
+			for i := range 3 {
+				mustMatch(t, h.pod(instanceName("cache", i)).Metadata.Labels[roleLabel], roleReplica)
+			}
+		})
+	}
 }
 
 func findReady(t *testing.T, r Redis) Condition {

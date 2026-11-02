@@ -352,18 +352,26 @@ func (c *kubeClient) apply(ctx context.Context, resource kubeResource, namespace
 // delete deletes one object, on the condition that its uid is uid. An
 // object made again under the same name has another uid, and the API
 // server refuses the delete with errConflict, so the caller deletes
-// only the object it read. An object that is already gone is
-// errNotFound, which the caller can take as done.
+// only the object it read. An empty uid deletes the object whatever its
+// uid. An object that is already gone is errNotFound, which the caller
+// can take as done.
 func (c *kubeClient) delete(ctx context.Context, resource kubeResource, namespace, name, uid, resourceVersion string) error {
 	type preconditions struct {
-		UID             string `json:"uid"`
-		ResourceVersion string `json:"resourceVersion,omitempty"`
+		// The API server reads a uid that is present and empty as a
+		// condition no object meets, so an empty one is left out.
+		UID             *string `json:"uid,omitempty"`
+		ResourceVersion string  `json:"resourceVersion,omitempty"`
+	}
+	var condition preconditions
+	condition.ResourceVersion = resourceVersion
+	if uid != "" {
+		condition.UID = &uid
 	}
 	body, err := json.Marshal(struct {
 		APIVersion    string        `json:"apiVersion"`
 		Kind          string        `json:"kind"`
 		Preconditions preconditions `json:"preconditions"`
-	}{"v1", "DeleteOptions", preconditions{uid, resourceVersion}})
+	}{"v1", "DeleteOptions", condition})
 	if err != nil {
 		return err
 	}

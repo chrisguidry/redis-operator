@@ -30,8 +30,11 @@ const detachedHost = "192.0.2.1"
 // serverSettings is what the configuration file says, from the spec
 // and the pod.
 type serverSettings struct {
-	engine             string
-	bindIP             string
+	engine string
+	bindIP string
+	// loopback also listens on 127.0.0.1, so redis-cli in the container
+	// reaches the server without naming the pod's IP.
+	loopback           bool
 	port               int
 	dataDir            string
 	configPath         string
@@ -51,9 +54,13 @@ type serverSettings struct {
 const minReplicasMaxLag = 10
 
 func (s serverSettings) config() string {
+	bind := "bind " + s.bindIP
+	if s.loopback {
+		bind += " 127.0.0.1"
+	}
 	lines := []string{
 		"port " + strconv.Itoa(s.port),
-		"bind " + s.bindIP,
+		bind,
 		"protected-mode no",
 		"dir " + s.dataDir,
 		"requirepass " + quoteConfig(s.password),
@@ -179,12 +186,52 @@ func (s *server) promote(ctx context.Context, info replicationInfo) error {
 	return err
 }
 
-// killClients closes every client connection except the manager's own,
-// so a client that kept a connection to a demoted primary reconnects
-// through the Service and finds the new one.
-func (s *server) killClients(ctx context.Context) error {
-	_, err := s.do(ctx, "CLIENT", "KILL", "TYPE", "normal", "SKIPME", "yes")
+// pauseWrites holds every client's writes until unpause, or until
+// limit passes. Reads still run.
+func (s *server) pauseWrites(ctx context.Context, limit time.Duration) error {
+	_, err := s.do(ctx, "CLIENT", "PAUSE", strconv.FormatInt(limit.Milliseconds(), 10), "WRITE")
 	return err
+}
+
+func (s *server) unpause(ctx context.Context) error {
+	_, err := s.do(ctx, "CLIENT", "UNPAUSE")
+	return err
+}
+
+// killClients closes every normal and pub/sub connection except the
+// manager's own, so a client of a demoted primary reconnects through
+// the Service and finds the new one. The replication links are other
+// types and stay. With unpause it also ends a pause of writes, in one
+// transaction, so no held write runs between the two and fails with
+// READONLY.
+func (s *server) killClients(ctx context.Context, unpause bool) error {
+	commands := [][]string{
+		{"CLIENT", "KILL", "TYPE", "normal", "SKIPME", "yes"},
+		{"CLIENT", "KILL", "TYPE", "pubsub"},
+	}
+	if unpause {
+		commands = append(commands, []string{"CLIENT", "UNPAUSE"})
+	}
+	if _, err := s.do(ctx, "MULTI"); err != nil {
+		return err
+	}
+	for _, command := range commands {
+		if _, err := s.do(ctx, command...); err != nil {
+			_, _ = s.do(ctx, "DISCARD")
+			return err
+		}
+	}
+	reply, err := s.do(ctx, "EXEC")
+	if err != nil {
+		return err
+	}
+	items, _ := reply.([]any)
+	for _, item := range items {
+		if failed, ok := item.(replyError); ok {
+			return failed
+		}
+	}
+	return nil
 }
 
 func (s *server) setMinReplicasToWrite(ctx context.Context, n int) error {

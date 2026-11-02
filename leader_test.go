@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -297,9 +298,15 @@ func TestACandidateKeepsTryingWhileTheAPIServerRefusesIt(t *testing.T) {
 }
 
 func TestCandidateIdentitiesAreUnique(t *testing.T) {
-	first, second := candidateIdentity(), candidateIdentity()
+	first, second := candidateIdentity(os.Hostname), candidateIdentity(os.Hostname)
 
 	mustMatch(t, first != second, true)
+}
+
+func TestACandidateWithNoHostnameNamesThisOperator(t *testing.T) {
+	identity := candidateIdentity(func() (string, error) { return "", errors.New("no hostname") })
+
+	mustMatch(t, strings.HasPrefix(identity, "redis-operator_"), true)
 }
 
 const operatorNamespace = "redis-operator"
