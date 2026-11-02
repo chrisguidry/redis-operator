@@ -1,0 +1,14 @@
+# The coverage gate, which `make test-go` and CI run.
+#
+# The floor only rises. Set it just under what the tests measure, so a
+# change that loses coverage fails, and raise it when a change gains
+# coverage.
+#
+# The gate measures on a pinned toolchain. The Makefile says why.
+
+profile: coverage.out
+
+threshold:
+  # go test never calls main(), so its statements never count as
+  # covered.
+  total: 35

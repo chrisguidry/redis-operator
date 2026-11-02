@@ -1,0 +1,36 @@
+# Every pull request and every push to main runs the gate: gofmt, vet,
+# the race tests, and the coverage floor. release.yaml builds the image
+# beside this run and pushes it only when this run passes.
+#
+# There is no path filter. The tests are cheap, and a filter would have
+# to name every file that can break a build.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      # setup-go keeps the module downloads and the build cache between
+      # runs, keyed on go.sum, so a run compiles only what changed.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The same target a workstation runs. The Makefile says why the
+      # coverage gate pins a toolchain, and .testcoverage.yml holds the
+      # floor.
+      - run: make test-go

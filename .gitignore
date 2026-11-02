@@ -1,0 +1,6 @@
+/redis-operator
+
+# The coverage profile and its report. `make test-go` and CI write them
+# on every run.
+/coverage.out
+/coverage.html
