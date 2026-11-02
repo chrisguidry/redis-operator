@@ -1,6 +1,6 @@
 ---
 name: declare-a-redis
-description: "Declare a Redis resource for Redis or Valkey: instances, engine, memory and the maxmemory share, storage or none, scheduling; connect clients through the -rw and -ro Services and the -app Secret; read the status and its conditions; scale up and down. Use when an application needs a Redis or Valkey, when a client cannot connect, or when changing the number of instances."
+description: "Declare a Redis resource for Redis or Valkey: instances, engine, memory and the maxmemory share, storage or none, scheduling, the metrics exporter beside each instance and the keys it checks; connect clients through the -rw and -ro Services and the -app Secret; read the status and its conditions; scale up and down. Use when an application needs a Redis or Valkey, when a client cannot connect, or when changing the number of instances."
 ---
 
 Before the first command, run `kubectl config current-context` and confirm that it names the cluster the person means.
@@ -38,6 +38,9 @@ spec:
 | `minReplicasToWrite` | `1` when `instances` is more than 1, else `0` | The server's `min-replicas-to-write`: the primary refuses writes with `NOREPLICAS` while fewer replicas have acknowledged it within 10 seconds. Must be less than `instances`. The value the primary runs with is in `status.minReplicasToWrite`; see "Scale". |
 | `cpu` | none | The container's CPU request. There is no CPU limit. |
 | `nodeSelector`, `tolerations`, `priorityClassName` | none | Copied into the pod spec. |
+| `metrics.enabled` | `true` | Runs redis_exporter beside each instance; see "Metrics". |
+| `metrics.image` | redis_exporter at the version the operator pins | The exporter image. The operator pins `oliver006/redis_exporter:v1.96.0`. |
+| `metrics.checkSingleKeys` | none | Keys whose value or length the exporter reports, such as `celery`. A key is in database 0; write `db1=jobs` for another database. No key may hold a comma. |
 
 `spec.backup`, `spec.bootstrap`, and `spec.replica` are covered by the
 `backups` and `adopt-an-existing-redis` skills.
@@ -69,6 +72,41 @@ image or operator upgrade, and comes back by itself as an empty primary
 with `DataLost` set. A `Redis` that is still replicating from an
 adoption source sets no `DataLost` when its instances restart empty:
 instance 0 copies the source again.
+
+### Metrics
+
+Each pod runs [redis_exporter](https://github.com/oliver006/redis_exporter)
+in a container named `metrics`. It reads its own server over 127.0.0.1
+with the password from `cache-app`, and serves on port 9121, the
+container port named `metrics`, with redis_exporter's series names:
+`redis_up`, `redis_memory_used_bytes`, `redis_memory_max_bytes`,
+`redis_connected_clients`, `redis_connected_slaves`,
+`redis_master_repl_offset`, and the rest. Every instance reports
+itself, so a replica's link and lag are visible, not only the
+primary's. redis_exporter reads Valkey too.
+
+To alert on a queue's length, name the key:
+
+```yaml
+spec:
+  metrics:
+    checkSingleKeys: [celery]
+```
+
+The exporter then serves `redis_key_size{db="db0",key="celery"}`, on
+every instance. A replica's value can trail the primary's, so select the
+primary in a rule, such as
+`redis_key_size{key="celery", redis_role="primary"}` with the
+monitoring component's labels (see the `install` skill).
+
+A change to `spec.metrics`, and the release that first adds the
+exporter, changes the pod template, so the operator rolls every pod
+once: the replicas one at a time, a switchover, then the old primary,
+as it rolls any change. The exporter counts toward the pod's
+readiness, so an exporter image that cannot be pulled holds the roll
+at its first replica, and an exporter that crashes takes its pod out
+of its Service until it restarts. `metrics.enabled: false` removes the
+container, which rolls the pods the same way.
 
 ### Placement
 

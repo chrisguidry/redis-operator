@@ -158,6 +158,8 @@ func TestTheCRDRefuses(t *testing.T) {
 		{"no instances", map[string]any{"instances": 0}, "spec.instances"},
 		{"a fractional memory", map[string]any{"memory": "1.5Gi"}, "spec.memory"},
 		{"as many required replicas as instances", map[string]any{"instances": 2, "minReplicasToWrite": 2}, "minReplicasToWrite must be less than instances"},
+		{"a single key with a comma", map[string]any{"metrics": map[string]any{"checkSingleKeys": []any{"a,b"}}}, "spec.metrics.checkSingleKeys"},
+		{"an empty single key", map[string]any{"metrics": map[string]any{"checkSingleKeys": []any{""}}}, "spec.metrics.checkSingleKeys"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

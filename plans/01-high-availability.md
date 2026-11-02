@@ -31,6 +31,10 @@ spec:
   nodeSelector: {}
   tolerations: []
   priorityClassName: ""
+  metrics:                # see "Metrics"
+    enabled: true         # default true; false removes the exporter
+    image: ""             # default: redis_exporter at the version the operator pins
+    checkSingleKeys: []   # keys whose value or length the exporter reports
 status:
   observedGeneration: 3
   targetPrimary: cache-0
@@ -277,6 +281,149 @@ replica to switch to, so the operator deletes its only pod. Nothing
 rolls while a failover or switchover runs, while the Lease has no
 holder, or while the StatefulSet has fewer pods than `instances`.
 
+## Events
+
+The operator posts a Kubernetes Event for each decision a person wants
+to read in `kubectl describe redis`, beside the log line it already
+writes. A condition says what is true now, an Event what just
+happened, and the log keeps every attempt and detail.
+
+On a `Redis`, it posts one Event for each condition transition: a
+condition that is new, or whose status or reason changed. A condition
+whose message alone changed, such as the count of ready instances, did
+not transition. The Event's reason is the condition's reason, and its
+message is `<Type> is <Status>: <message>`. It also posts one Event for
+each action: `FailoverStarted` with the instance and why,
+`PrimaryChosen` with its offset, `AllInstancesEmpty`,
+`SwitchoverStarted` with its cause (`PodDeleted`, `NodeCordoned`,
+`ScaleDown`, or `Rollout`) in words, `SwitchoverDone`,
+`RolloutStarted`, `RollingInstance` for each pod it deletes,
+`CanaryPromoted`, `CanaryRolledBack`, `RolloutCompleted`,
+`RolloutReverted`, `ReplicaModeStarted`, `PromotionStarted`, and
+`BackupDeleted` for each Backup retention deletes. On a `Backup` it
+posts `Started`, `Completed`, and `Failed`, and on a `ScheduledBackup`
+`BackupCreated`.
+
+A transition to a condition's bad state is a Warning: `Ready` False,
+`DataLost`, `SwitchoverFailed`, and `RolloutFailed` True, and
+`SourceReachable` and `Adopted` False. `Ready` False with
+`InstancesNotReady` is Normal, because each pod of a rollout restarts
+that way, and so is `NoPrimary` before the first primary took the
+Lease, because each new `Redis` starts that way. A failover, the
+instances all restarting empty, and a canary rolled back are Warnings.
+
+The decisions of a pass post their Events only after the status write
+lands. A write that a newer version refused lands nothing, and the next
+pass decides again, so an Event posted earlier could tell of a decision
+that never took effect. The pod deletes of a rollout post at once,
+because the delete happened whatever the status write does.
+
+An instance manager writes a Backup's end, so the operator learns of it
+from the phase, and remembers the phase it last saw of each Backup. A
+Backup it first sees after it starts is remembered without an Event, so
+a restarted operator does not post again each Backup that finished
+before it. This memory decides only Events.
+
+The Events are core/v1, as liken's `kubernetes/events` package writes
+them, with `reportingComponent` `redis-operator` and the pod's name as
+`reportingInstance`, and no `eventTime`, so the API server does not
+apply the stricter checks of events.k8s.io/v1. A post never slows or
+fails a pass: it puts the Event on a bounded queue and returns, and one
+goroutine writes the queue, each request under a timeout. A full queue
+drops the Event, and the first drop is logged. A write that fails is
+sent again, and after the last attempt the operator logs one line until
+a write succeeds again. An Event in a namespace that is gone or being
+deleted is dropped with no log line. A repeat of the same Event on the
+same object within 10 minutes patches `count` and `lastTimestamp` on
+the Event already written, as client-go's recorder does, so a
+condition that flaps prints one line, such as `(x12 over 8m)`, and
+writes no new object. The API server deletes an Event an hour after its
+last write, so the conditions and the status, not the Events, hold
+what must last. The operator needs `create` and `patch` on `events`.
+
+## Metrics
+
+Each instance pod runs a second container, `metrics`, with
+[redis_exporter](https://github.com/oliver006/redis_exporter). It reads
+its own server at `redis://127.0.0.1:6379`, with the password from
+`<name>-app` in the variable `REDIS_PASSWORD`, and serves on port 9121,
+the container port named `metrics`. Before this, a user ran one
+redis_exporter Deployment per `Redis` pointed at `<name>-rw`, which saw
+only the primary. Beside each instance, every replica reports its own
+link, offset, and memory, and the series keep redis_exporter's names,
+so the dashboards and alert rules written for it work unchanged.
+redis_exporter reads Valkey as it reads Redis, and the e2e scenario
+runs it against both engines.
+
+The operator pins the exporter's image, which `spec.metrics.image`
+overrides. The container requests a little CPU and memory and has a
+memory limit, so an exporter that leaks cannot take the node's memory
+from the server. `spec.metrics.enabled` defaults to true, and false
+leaves the container out. `spec.metrics.checkSingleKeys` passes keys to
+redis_exporter's `-check-single-keys`, joined with commas, so a user can
+alert on a queue's length, such as a Celery `celery` list. The CRD
+refuses a key with a comma, which would split into two.
+
+The exporter counts toward the pod's readiness, as every container
+does, so an exporter that crashes takes its pod out of the Services
+until it restarts, and an exporter image that cannot be pulled holds a
+roll at the first replica. That is the cost of reading each server
+over the loopback from its own pod, and `enabled: false` removes it.
+When a pod waits on a container other than `redis`, the canary's
+failure reason names that container.
+
+Adding the exporter, and any later change to `spec.metrics`, changes
+the pod template, so every existing `Redis` rolls once through
+"Rolling a change" when the operator that adds it first runs.
+
+The instance manager adds no role label to the series. The PodMonitor
+in `deploy/monitoring` copies the pod's `redis.guid.foo/role` into the
+target label `redis_role`, and redis_exporter's `redis_instance_info`
+already carries the server's own view as `role` (`master` or `slave`).
+A query that wants the server's view on another series joins on it:
+
+```promql
+redis_memory_used_bytes * on (namespace, pod) group_left (role) redis_instance_info
+```
+
+The target label is `redis_role`, not `role`, because a target label
+named `role` would rename `redis_instance_info`'s own to
+`exported_role` and break the queries written for redis_exporter.
+
+### The monitoring component
+
+`deploy/monitoring` is a kustomize Component that a cluster with the
+Prometheus Operator takes beside the base. It holds:
+
+- a PodMonitor for the operator's port `metrics`, whose `jobLabel`
+  takes the job from the pods' `app` label, so the rules find
+  `job="redis-operator"` in any namespace;
+- a PodMonitor for every pod with the label `redis.guid.foo/cluster`
+  in every namespace, on the port `metrics`, which adds `redis` from
+  that label and `redis_role` from the role label;
+- a PrometheusRule with the alerts below;
+- a Grafana dashboard, as a ConfigMap labeled `grafana_dashboard` in
+  the namespace `monitoring`: the role of each instance, commands per
+  second, memory against `maxmemory`, clients, replication offsets and
+  lag, the single keys, failovers and switchovers by reason, and the
+  operator's leader and reconcile errors.
+
+| Alert | Expression | For | Why the wait |
+|---|---|---|---|
+| `RedisOperatorNoLeader` | `sum(redis_operator_leader) < 1`, or no series | 5m | a standby takes the Lease within a lease duration |
+| `RedisRepeatedFailovers` | three or more failovers in an hour | 0 | the count is the wait |
+| `RedisDown` | `redis_up == 0` or the exporter's `up == 0` | 5m | a restarting server answers within its liveness window, and a deleted pod's target leaves instead of going down |
+| `RedisNoPrimary` | a `Redis` has targets and none labeled `primary` | 3m | no pod is `primary` during a switchover or a failover, for seconds |
+| `RedisReplicationLinkDown` | `redis_master_link_up == 0` | 5m | every replica detaches during a failover, and a new replica's link is down until its first sync ends |
+| `RedisReplicaLagging` | `redis_connected_slave_lag_seconds > 30` | 5m | a replica acknowledges every second |
+| `RedisMemoryNearMaxmemory` | used over 90% of `maxmemory`, `noeviction` only | 15m | with an eviction policy, a full server is a cache doing its job |
+
+`RedisNoPrimary` reads the role label from `up`, not `redis_up`, so a
+primary whose exporter is down still counts as a primary, and
+`RedisDown` reports the exporter. `RedisRepeatedFailovers` counts
+across every `Redis`, because the operator's counter has no label for
+the `Redis`.
+
 ## Tests
 
 - **Unit, with real servers:** the RESP client and the instance manager
@@ -295,9 +442,13 @@ holder, or while the StatefulSet has fewer pods than `instances`.
   scale from three instances to one while the primary is not instance
   0, and back to three; delete the pod of a one-instance `Redis` with no
   volume, which must come back empty with `DataLost`, and of one with a
-  volume, which must keep its data. A second writer keeps one connection through
-  `<name>-rw` for as long as the server keeps it, as an application's
-  client does. After each scenario, the test checks that the counter is
+  volume, which must keep its data; and read each instance's exporter
+  through the API server's pod proxy, which must report `redis_up 1`
+  and the role the pod's label names, before and after
+  `spec.metrics.checkSingleKeys` rolls the pods, after which the
+  primary's exporter must report the writer's key. A second writer
+  keeps one connection through `<name>-rw` for as long as the server
+  keeps it, as an application's client does. After each scenario, the test checks that the counter is
   at least the highest confirmed value, that the writer confirms new
   writes, and that the held connection was never answered `READONLY`.
   Scaling up must also draw no `NOREPLICAS`. It does not check that the
@@ -309,12 +460,8 @@ These stay in this milestone and ship in its second release:
 
 - ACL users declared from Secrets, and TLS with certificates from
   cert-manager.
-- A Redis metrics exporter beside each instance. The operator's own
-  metrics are built (`redis_operator_` series on port 9200).
 - The failover quorum: promote only after reaching enough replicas to
   see every write confirmed with `WAIT n`.
 - A network partition test in which the primary's clients can still
   reach it. The partition scenario in `e2e/scenarios.sh` drops all of
   the pod's traffic, clients included.
-- An Event for each condition transition, as liken's `events` package
-  posts them. The first release logs each decision instead.

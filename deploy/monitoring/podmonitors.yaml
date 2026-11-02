@@ -1,0 +1,49 @@
+# The operator's own metrics, on the container port named metrics.
+# jobLabel takes the job from the pods' app label, so the alert rules
+# find the operator under job="redis-operator" in any namespace.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: redis-operator
+  namespace: redis-operator
+  labels:
+    app.kubernetes.io/name: redis-operator
+spec:
+  jobLabel: app
+  selector:
+    matchLabels:
+      app: redis-operator
+  podMetricsEndpoints:
+    - port: metrics
+---
+# Every Redis instance in every namespace: each pod's redis_exporter
+# container, on the port named metrics. The Prometheus Operator labels
+# each series with its namespace and pod. The relabelings add the
+# Redis's name, from the label every instance pod carries, and the role
+# the operator wrote on the pod.
+#
+# The role goes in redis_role, not role, because redis_exporter's
+# redis_instance_info already has a role label, the server's own view
+# (master or slave). A target label of the same name would rename the
+# exporter's to exported_role and break the queries that read it.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: redis
+  namespace: redis-operator
+  labels:
+    app.kubernetes.io/name: redis-operator
+spec:
+  namespaceSelector:
+    any: true
+  selector:
+    matchExpressions:
+      - key: redis.guid.foo/cluster
+        operator: Exists
+  podMetricsEndpoints:
+    - port: metrics
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_label_redis_guid_foo_cluster]
+          targetLabel: redis
+        - sourceLabels: [__meta_kubernetes_pod_label_redis_guid_foo_role]
+          targetLabel: redis_role

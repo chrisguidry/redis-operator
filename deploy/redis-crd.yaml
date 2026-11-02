@@ -217,6 +217,22 @@ spec:
                               properties:
                                 secret: {type: string}
                                 key: {type: string}
+                metrics:
+                  type: object
+                  description: The redis_exporter container beside each instance, which serves its server's metrics on the port named metrics.
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: true
+                    image:
+                      type: string
+                      description: The exporter image. The default is redis_exporter at the version this operator pins.
+                    checkSingleKeys:
+                      type: array
+                      description: Keys whose value or length the exporter reports, such as a queue's list. A key is in database 0, or written db<n>=<key>.
+                      items:
+                        type: string
+                        pattern: '^[^,]+$'
             status:
               type: object
               properties:

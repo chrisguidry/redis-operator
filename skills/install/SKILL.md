@@ -1,6 +1,6 @@
 ---
 name: install
-description: "Install, upgrade, or remove redis-operator from its kustomize base pinned to a release, choose its namespace, admit it through NetworkPolicies, and check that it runs and serves metrics. Use when a cluster has no Redis CRD yet, when moving the operator to a new release, or when removing it."
+description: "Install, upgrade, or remove redis-operator from its kustomize base pinned to a release, choose its namespace, admit it through NetworkPolicies, add the monitoring component of PodMonitors, alerts, and a Grafana dashboard, and check that it runs and serves metrics. Use when a cluster has no Redis CRD yet, when moving the operator to a new release, or when removing it."
 ---
 
 Before the first command, run `kubectl config current-context` and confirm that it names the cluster the person means.
@@ -107,8 +107,8 @@ kubectl -n redis-operator logs <leader pod> -f
 Each replica serves Prometheus metrics on port 9200, the container
 port named `metrics`, at `/metrics`. The environment variable
 `METRICS_PORT` moves it. The base makes no Service or monitor for it;
-add a PodMonitor or a Service that selects `app: redis-operator` if
-you scrape it. The series:
+take the monitoring component below, or add a PodMonitor or a Service
+that selects `app: redis-operator`. The series:
 
 | Series | What it counts |
 |---|---|
@@ -118,6 +118,80 @@ you scrape it. The series:
 | `redis_operator_failovers_total` | failovers started because the primary could not be reached |
 | `redis_operator_switchovers_total{reason}` | planned switchovers, by reason: `NodeCordoned`, `PodDeleted`, `Rollout`, or `ScaleDown` |
 | `redis_operator_watch_restarts_total{resource}` | watches that ended and were opened again |
+
+Every Redis instance pod also runs redis_exporter in a container named
+`metrics`, on port 9121, the container port named `metrics`. Its series
+keep redis_exporter's names. The `declare-a-redis` skill covers
+`spec.metrics`.
+
+### The monitoring component
+
+A cluster that runs the Prometheus Operator takes
+`deploy/monitoring` beside the base, at the same release:
+
+```yaml
+resources:
+  - https://github.com/chrisguidry/redis-operator//deploy?ref=2026.11.01-001
+components:
+  - https://github.com/chrisguidry/redis-operator//deploy/monitoring?ref=2026.11.01-001
+```
+
+It adds, in the namespace `redis-operator`:
+
+- the PodMonitor `redis-operator`, which scrapes the operator under
+  `job="redis-operator"`;
+- the PodMonitor `redis`, which scrapes the port named `metrics` of
+  every pod with the label `redis.guid.foo/cluster`, in every
+  namespace, and adds the labels `redis` (the `Redis`'s name) and
+  `redis_role` (the pod's `redis.guid.foo/role`) to `namespace` and
+  `pod`;
+- the PrometheusRule `redis-operator`, with the alerts below.
+
+It also adds the ConfigMap `redis-operator-dashboard`, labeled
+`grafana_dashboard: "1"`, in the namespace `monitoring`, where the
+kube-prometheus-stack's Grafana sidecar loads dashboards from.
+
+The role label is `redis_role`, not `role`, because redis_exporter's
+`redis_instance_info` has a `role` label of its own: the server's view,
+`master` or `slave`. To label another series with the server's view,
+join on it:
+
+```promql
+redis_memory_used_bytes * on (namespace, pod) group_left (role) redis_instance_info
+```
+
+A Prometheus whose `podMonitorSelector` or `ruleSelector` matches a
+label, such as the kube-prometheus-stack's `release` label, ignores
+these objects until they carry it. Add it with a patch in the same
+kustomization:
+
+```yaml
+patches:
+  - target:
+      group: monitoring.coreos.com
+    patch: |
+      - op: add
+        path: /metadata/labels/release
+        value: kube-prometheus-stack
+```
+
+A Prometheus with `ignoreNamespaceSelectors` reads pods only in the
+PodMonitor's own namespace, so it scrapes no Redis. A kustomization
+that sets `namespace:` moves the dashboard's ConfigMap too.
+
+| Alert | Fires when | For |
+|---|---|---|
+| `RedisOperatorNoLeader` | no operator replica reports `redis_operator_leader` 1, or none is scraped | 5m |
+| `RedisRepeatedFailovers` | three or more failovers in an hour, across every `Redis` | at once |
+| `RedisDown` | an instance's `redis_up` is 0, or its exporter cannot be scraped | 5m |
+| `RedisNoPrimary` | no pod of a `Redis` carries `redis.guid.foo/role=primary` | 3m |
+| `RedisReplicationLinkDown` | an instance's `redis_master_link_up` is 0 | 5m |
+| `RedisReplicaLagging` | a replica has not acknowledged its primary for 30 seconds | 5m |
+| `RedisMemoryNearMaxmemory` | an instance with `maxmemoryPolicy: noeviction` uses more than 90% of `maxmemory` | 15m |
+
+Each one waits longer than a switchover, a failover, or a rolling
+update takes, so it fires on a fault that stays. The `troubleshoot`
+skill says what to read for each.
 
 ## NetworkPolicies
 
@@ -153,6 +227,8 @@ The Redis pods also reach each other on 6379, for replication, and on
 9123, where a primary that cannot renew its Lease asks its peers which
 instance should be primary. A policy that admits the namespace's own
 pods covers both. Clients need 6379.
+Prometheus needs 9121, the exporter's port named `metrics`, on every
+Redis pod.
 
 The operator also connects out: to the Kubernetes API, to an S3
 endpoint when it deletes a backup's object, and to the source Redis or
@@ -173,7 +249,9 @@ only pod deleted and restarted.
 
 A `Redis` that leaves `spec.image` empty runs the engine's image at the
 version the operator pins, and a release can move that pin. The
-`upgrade` skill covers both rolls.
+`upgrade` skill covers both rolls. The exporter image beside each
+instance is pinned the same way, and its move changes the pod template
+in the same roll; `spec.metrics.image` holds it still.
 
 ## Remove the operator
 

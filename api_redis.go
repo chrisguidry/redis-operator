@@ -59,6 +59,7 @@ type RedisSpec struct {
 	Backup             *BackupStore      `json:"backup,omitempty"`
 	Bootstrap          *Bootstrap        `json:"bootstrap,omitempty"`
 	Replica            *ReplicaSpec      `json:"replica,omitempty"`
+	Metrics            *MetricsSpec      `json:"metrics,omitempty"`
 }
 
 type StorageSpec struct {

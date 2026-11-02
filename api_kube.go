@@ -37,14 +37,20 @@ type ContainerStatus struct {
 	} `json:"state"`
 }
 
-// waitingReason is why the pod's server container waits, or "".
+// waitingReason is why one of the pod's containers waits, or "". A
+// container other than the server's is named, so a reason that comes
+// from the exporter's image does not read as the server's.
 func (p Pod) waitingReason() string {
 	for _, status := range p.Status.ContainerStatuses {
 		if w := status.State.Waiting; w != nil && w.Reason != "" {
+			reason := w.Reason
 			if w.Message != "" {
-				return w.Reason + ": " + w.Message
+				reason += ": " + w.Message
 			}
-			return w.Reason
+			if status.Name != "redis" {
+				reason = "the " + status.Name + " container: " + reason
+			}
+			return reason
 		}
 	}
 	return ""

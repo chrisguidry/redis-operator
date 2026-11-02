@@ -1,0 +1,53 @@
+# The monitoring component: PodMonitors for the operator and for every
+# Redis instance, a PrometheusRule of alerts, and a Grafana dashboard.
+# It changes nothing in the base. A cluster without the Prometheus
+# Operator does not take it: the operator and each instance's exporter
+# serve their ports either way.
+#
+# Take it beside the base, pinned to the same release:
+#
+#   resources:
+#     - https://github.com/chrisguidry/redis-operator//deploy?ref=<version>
+#   components:
+#     - https://github.com/chrisguidry/redis-operator//deploy/monitoring?ref=<version>
+#
+# The PodMonitors and the PrometheusRule name their own namespace,
+# redis-operator, because a component's resources do not take the
+# base's. A kustomization that takes the component and sets a namespace
+# moves them with the operator, and moves the dashboard's ConfigMap too.
+# The ConfigMap names monitoring, where the kube-prometheus-stack's
+# Grafana sidecar looks for ConfigMaps labeled grafana_dashboard; a
+# Grafana that looks elsewhere needs a patch that moves it.
+#
+# A Prometheus whose podMonitorSelector or ruleSelector matches a label,
+# such as the kube-prometheus-stack's release label, ignores these
+# objects until they carry that label. Add it with a patch:
+#
+#   patches:
+#     - target:
+#         group: monitoring.coreos.com
+#       patch: |
+#         - op: add
+#           path: /metadata/labels/release
+#           value: kube-prometheus-stack
+#
+# The instance PodMonitor reads pods in every namespace. A Prometheus
+# that ignores namespace selectors (ignoreNamespaceSelectors) reads only
+# the PodMonitor's own namespace, and a NetworkPolicy in a Redis's
+# namespace must admit Prometheus to the port named metrics.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - podmonitors.yaml
+  - prometheusrule.yaml
+
+configMapGenerator:
+  - name: redis-operator-dashboard
+    namespace: monitoring
+    files:
+      - dashboards/redis-operator.json
+    options:
+      disableNameSuffixHash: true
+      labels:
+        grafana_dashboard: "1"

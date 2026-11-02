@@ -155,6 +155,20 @@ func statefulSet(r *Redis, operatorImage string, restore *BackupVolume, replicas
 			"failureThreshold": failures,
 		}
 	}
+	containers := []map[string]any{{
+		"name":           "redis",
+		"image":          servingImage(r),
+		"command":        []string{"/manager/redis-operator", "manager"},
+		"env":            env,
+		"ports":          []map[string]any{{"name": "redis", "containerPort": serverPort}, {"name": "status", "containerPort": statusPort}},
+		"resources":      resources,
+		"readinessProbe": probe("/ready", 2, 1),
+		"livenessProbe":  probe("/healthz", 10, 3),
+		"volumeMounts":   mounts(r, restore),
+	}}
+	if r.Spec.metricsEnabled() {
+		containers = append(containers, exporter(r))
+	}
 	podSpec := map[string]any{
 		"serviceAccountName": name,
 		// A primary that is deleted waits for its switchover inside this
@@ -175,18 +189,8 @@ func statefulSet(r *Redis, operatorImage string, restore *BackupVolume, replicas
 			"args":         []string{"install", "/manager"},
 			"volumeMounts": []map[string]any{{"name": "manager", "mountPath": "/manager"}},
 		}},
-		"containers": []map[string]any{{
-			"name":           "redis",
-			"image":          servingImage(r),
-			"command":        []string{"/manager/redis-operator", "manager"},
-			"env":            env,
-			"ports":          []map[string]any{{"name": "redis", "containerPort": serverPort}, {"name": "status", "containerPort": statusPort}},
-			"resources":      resources,
-			"readinessProbe": probe("/ready", 2, 1),
-			"livenessProbe":  probe("/healthz", 10, 3),
-			"volumeMounts":   mounts(r, restore),
-		}},
-		"volumes": volumes(r, restore),
+		"containers": containers,
+		"volumes":    volumes(r, restore),
 	}
 	if len(r.Spec.NodeSelector) > 0 {
 		podSpec["nodeSelector"] = r.Spec.NodeSelector

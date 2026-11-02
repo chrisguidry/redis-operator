@@ -1,0 +1,124 @@
+# Alerts on the operator and on every Redis whose instances run the
+# exporter. Each one waits out what a normal switchover, failover, or
+# rolling update looks like, so it fires on a fault that stays. The
+# troubleshoot skill says what to read when each one fires.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: redis-operator
+  namespace: redis-operator
+  labels:
+    app.kubernetes.io/name: redis-operator
+spec:
+  groups:
+    - name: redis-operator
+      rules:
+        # A standby takes over within a lease duration of the leader
+        # stopping, so a gap of minutes is not a handover.
+        - alert: RedisOperatorNoLeader
+          expr: |
+            sum(redis_operator_leader{job="redis-operator"}) < 1
+              or absent(redis_operator_leader{job="redis-operator"})
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: No redis-operator replica leads
+            description: >-
+              No replica of the operator has held its Lease for five
+              minutes, or Prometheus cannot scrape any of them. Nothing
+              fails over, switches over, rolls, or backs up a Redis until
+              one leads.
+
+        # The operator counts failovers across every Redis it runs.
+        - alert: RedisRepeatedFailovers
+          expr: sum(increase(redis_operator_failovers_total{job="redis-operator"}[1h])) >= 3
+          labels:
+            severity: warning
+          annotations:
+            summary: redis-operator failed over {{ $value | humanize }} times in an hour
+            description: >-
+              Failovers start when a primary cannot be reached. Several in
+              an hour mean a primary keeps dying or keeps losing the
+              network. The operator's log names each Redis it failed
+              over.
+
+    - name: redis
+      rules:
+        # A restarting server answers again within the pod's liveness
+        # window. A deleted pod's target leaves instead of going down.
+        - alert: RedisDown
+          expr: redis_up == 0 or up{redis!=""} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Redis {{ $labels.namespace }}/{{ $labels.redis }} instance {{ $labels.pod }} is down
+            description: >-
+              Either the exporter in {{ $labels.pod }} cannot reach its
+              server (redis_up is 0), or Prometheus cannot scrape the
+              exporter (up is 0).
+
+        # During a switchover or a failover no pod carries the primary
+        # label, and that lasts seconds.
+        - alert: RedisNoPrimary
+          expr: |
+            count by (namespace, redis) (up{redis!=""})
+              unless count by (namespace, redis) (up{redis!="", redis_role="primary"})
+          for: 3m
+          labels:
+            severity: critical
+          annotations:
+            summary: Redis {{ $labels.namespace }}/{{ $labels.redis }} has no primary
+            description: >-
+              No instance of {{ $labels.redis }} has carried the label
+              redis.guid.foo/role=primary for three minutes, so
+              {{ $labels.redis }}-rw has no endpoint and every write fails.
+              Read the Redis's Ready condition and status.targetPrimary.
+
+        # Every replica detaches while a failover picks the next
+        # primary, and a new replica's link is down until its first
+        # sync ends.
+        - alert: RedisReplicationLinkDown
+          expr: redis_master_link_up == 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Redis {{ $labels.namespace }}/{{ $labels.redis }} instance {{ $labels.pod }} is not replicating
+            description: >-
+              {{ $labels.pod }} has had no link to {{ $labels.master_host }}
+              for five minutes. Its data falls behind, and the primary does
+              not count it toward minReplicasToWrite.
+
+        # A replica acknowledges the primary every second. The label
+        # names the replica by its address, from the primary's view.
+        - alert: RedisReplicaLagging
+          expr: redis_connected_slave_lag_seconds > 30
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: A replica of Redis {{ $labels.namespace }}/{{ $labels.redis }} is {{ $value | humanizeDuration }} behind
+            description: >-
+              The replica at {{ $labels.slave_ip }} has not acknowledged
+              the primary {{ $labels.pod }} for {{ $value | humanizeDuration }}.
+              A switchover does not pick it, and if every replica lags,
+              the primary refuses writes with NOREPLICAS.
+
+        # Only a server that refuses writes at the limit is in trouble
+        # near it. With an eviction policy, a full server is a cache
+        # doing its job.
+        - alert: RedisMemoryNearMaxmemory
+          expr: |
+            redis_memory_used_bytes / (redis_memory_max_bytes > 0) > 0.9
+              and on (namespace, pod) redis_instance_info{maxmemory_policy="noeviction"}
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: Redis {{ $labels.namespace }}/{{ $labels.redis }} instance {{ $labels.pod }} is {{ $value | humanizePercentage }} of maxmemory
+            description: >-
+              With maxmemoryPolicy noeviction, the server refuses every
+              write that needs memory once it reaches maxmemory. Raise
+              spec.memory, which maxmemory follows, or delete data.

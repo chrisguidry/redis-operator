@@ -16,7 +16,7 @@ ENGINE=${ENGINE:-redis}
 NS=e2e
 # SCENARIOS names the scenarios to run, in order, such as
 # SCENARIOS=adoption to run one of them alone.
-SCENARIOS=${SCENARIOS:-delete_primary drain_primary_node operator_down freeze_primary partition_primary backup_restore adoption rollout scale single_instance upgrade broken_image}
+SCENARIOS=${SCENARIOS:-delete_primary drain_primary_node operator_down freeze_primary partition_primary metrics backup_restore backup_restore_volume adoption rollout scale single_instance upgrade broken_image}
 
 # shellcheck source=common.sh disable=SC1091
 source "$E2E_DIR/common.sh"
@@ -34,6 +34,8 @@ source "$E2E_DIR/adoption.sh"
 source "$E2E_DIR/upgrade.sh"
 # shellcheck source=single.sh disable=SC1091
 source "$E2E_DIR/single.sh"
+# shellcheck source=metrics.sh disable=SC1091
+source "$E2E_DIR/metrics.sh"
 
 for scenario in $SCENARIOS; do
   declare -F "scenario_$scenario" >/dev/null || die "there is no scenario named $scenario"
@@ -44,6 +46,7 @@ case "$ENGINE" in
   valkey) SERVER_IMAGE=$(sed -n 's/^[[:space:]]*engineValkey: *"\(.*\)",$/\1/p' "$REPO_ROOT/api_redis.go") ;;
   *) die "ENGINE is $ENGINE; it must be redis or valkey" ;;
 esac
+EXPORTER_IMAGE=$(sed -n 's/^const defaultExporterImage = "\(.*\)"$/\1/p' "$REPO_ROOT/api_metrics.go")
 
 RUN_ID=$(random_id)
 NETWORK="redis-e2e-$RUN_ID"
@@ -60,6 +63,9 @@ KUBECONFIG="$WORKDIR/kubeconfig"
 export KUBECONFIG
 
 cleanup() {
+  # The instance managers own the files on the backup volume, so they
+  # are removed from inside a node, as root.
+  docker exec "$SERVER" sh -c "rm -rf $BACKUP_VOLUME_PATH/*" >/dev/null 2>&1 || true
   # shellcheck disable=SC2046
   docker rm -f $(node_containers) >/dev/null 2>&1 || true
   docker network rm "$NETWORK" >/dev/null 2>&1 || true

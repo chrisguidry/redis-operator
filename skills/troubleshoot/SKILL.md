@@ -1,6 +1,6 @@
 ---
 name: troubleshoot
-description: "Diagnose a Redis resource from its conditions, status.instances, the operator's log, and the instance managers' logs; run redis-cli inside a pod; move the primary off a pod with the redis.guid.foo/switchover-requested annotation; and work through drains, PodDisruptionBudgets, failovers, and a Backup stuck Running. Use when a Redis is not Ready, a client gets READONLY or NOREPLICAS, a drain hangs, or the primary will not move."
+description: "Diagnose a Redis resource from its conditions, its Events, status.instances, the operator's log, and the instance managers' logs; run redis-cli inside a pod; move the primary off a pod with the redis.guid.foo/switchover-requested annotation; work through drains, PodDisruptionBudgets, failovers, and a Backup stuck Running; and act on the monitoring component's alerts. Use when a Redis is not Ready, when a redis-operator or Redis alert fires, a client gets READONLY or NOREPLICAS, a drain hangs, or the primary will not move."
 ---
 
 Before the first command, run `kubectl config current-context` and confirm that it names the cluster the person means.
@@ -8,8 +8,9 @@ Before the first command, run `kubectl config current-context` and confirm that 
 # Troubleshoot a Redis
 
 Read in this order: the `Ready` condition and the other conditions,
-then `status.instances`, then the log of the operator's leader, then
-the log of the instance manager in the pod the status points at.
+then the Events, then `status.instances`, then the log of the
+operator's leader, then the log of the instance manager in the pod the
+status points at.
 
 The examples use the `Redis` `cache` in the namespace `example`.
 
@@ -41,6 +42,45 @@ kubectl -n example get pods -l redis.guid.foo/cluster=cache -L redis.guid.foo/ro
 `DataLost` stays `True` once set; it records that the data set started
 again, not that it is still missing.
 
+## Events
+
+The operator posts an Event for each condition transition and each
+decision, so `kubectl describe` shows what happened in the last hour,
+oldest first:
+
+```sh
+kubectl -n example describe redis cache
+kubectl -n example get events --field-selector involvedObject.kind=Redis,involvedObject.name=cache
+kubectl -n example get events --field-selector involvedObject.kind=Backup,involvedObject.name=nightly
+```
+
+| Reason | Type | Meaning |
+|---|---|---|
+| `FailoverStarted` | Warning | the primary failed; the message names it and says why |
+| `PrimaryChosen` | Normal | a failover named the next primary, at the offset given |
+| `AllInstancesEmpty` | Warning | every instance restarted with no data |
+| `SwitchoverStarted` | Normal | a planned switchover, with its cause: `PodDeleted`, `NodeCordoned`, `ScaleDown`, or `Rollout` |
+| `SwitchoverDone` | Normal | the new primary holds the Lease |
+| `RolloutStarted`, `CanaryPromoted`, `RolloutCompleted`, `RolloutReverted` | Normal | the steps of an image rollout |
+| `RollingInstance` | Normal | the operator deleted a pod so it starts on the new revision |
+| `CanaryRolledBack` | Warning | the canary failed on the new image and rolls back |
+| `ReplicaModeStarted`, `PromotionStarted` | Normal | replica mode began, and a promotion paused the source |
+| `BackupDeleted` | Normal | retention deleted a Backup |
+| `Started`, `Completed`, `Failed` | Normal, Normal, Warning | on a `Backup` |
+| `BackupCreated` | Normal | on a `ScheduledBackup`, a Backup made on its schedule |
+
+Every condition transition also posts an Event whose reason is the
+condition's reason, with the message `<Type> is <Status>: <message>`,
+such as `Ready is False: no instance holds the primary lease`. A
+transition to a bad state is a Warning: `Ready` False after the first
+primary, except `InstancesNotReady`, and `DataLost`, `SwitchoverFailed`,
+or `RolloutFailed` True, and `SourceReachable` or `Adopted` False. An
+Event that repeats shows once with a count, such as `(x5 over 3m)`.
+
+The API server keeps an Event for an hour after its last write, so an
+older decision is only in the operator's log. An Event the operator
+could not write is in its log too: `events: writing the ... Event`.
+
 ## status.instances
 
 Each entry is what that pod's instance manager last reported:
@@ -66,7 +106,8 @@ leader=$(kubectl -n redis-operator get lease redis-operator -o jsonpath='{.spec.
 kubectl -n redis-operator logs "$leader" | grep 'redis example/cache'
 ```
 
-The operator logs each decision: failing over and why, the next
+The operator logs each decision that it also posts as an Event, with
+every attempt and detail: failing over and why, the next
 primary and its offset, each switchover and its reason, each pod it
 rolls, and each backup. A fault that repeats on every pass is logged
 once.
@@ -231,6 +272,63 @@ The operator marks a `Backup` `Failed` after an hour, or at once when
 the instance that takes it has lost its pod or its pod was made again.
 Read the instance's log for the upload. The `backups` skill covers the
 store, credentials, and restore failures.
+
+## Alerts
+
+The monitoring component in `deploy/monitoring` (see the `install`
+skill) adds these alerts. Each instance alert carries `namespace`,
+`redis`, and `pod`.
+
+**`RedisOperatorNoLeader`**: no operator replica has led for 5
+minutes, or Prometheus scrapes none. Nothing fails over, switches over,
+rolls, or backs up until one leads. Read "The operator restarts or does
+nothing" below. If the pods run and one leads, Prometheus cannot reach
+port 9200; check the PodMonitor `redis-operator` and NetworkPolicies.
+
+**`RedisRepeatedFailovers`**: three or more failovers in an hour,
+across every `Redis`. A failover starts only when a primary stops
+answering, so some primary keeps dying or losing the network. The
+operator's log names each one (`grep 'failing over'`); read the old
+primary's `redis` container log with `--previous` for an OOM kill or a
+crash, and its node's events.
+
+**`RedisDown`**: for 5 minutes, the pod's exporter could not reach its
+server (`redis_up` 0), or Prometheus could not scrape the exporter
+(`up` 0). With `redis_up` 0, the server is not running in a pod that
+is: read the `redis` container's log. With `up` 0, read the `metrics`
+container's log and check that a NetworkPolicy admits Prometheus on
+port 9121.
+
+```sh
+kubectl -n example logs cache-1 -c metrics
+```
+
+**`RedisNoPrimary`**: for 3 minutes no pod of the `Redis` has carried
+`redis.guid.foo/role=primary`, so `cache-rw` has no endpoint and every
+write fails. Read the `Ready` condition and `status.targetPrimary`: a
+long `FailoverInProgress` means no reachable instance holds data (see
+"A failover"), and `NoPrimary` means no instance holds the Lease.
+
+**`RedisReplicationLinkDown`**: for 5 minutes an instance's
+`redis_master_link_up` has been 0. The alert's `master_host` is the
+address it tries to follow; `192.0.2.1` means its manager detached it
+and has not pointed it at a primary. Read that pod's `redis` container
+log and `INFO replication`. In replica mode the alert on instance 0
+means the source cannot be reached; see the `SourceReachable`
+condition.
+
+**`RedisReplicaLagging`**: for 5 minutes a replica has not acknowledged
+the primary for 30 seconds. The alert's `pod` is the primary, and
+`slave_ip` is the replica's pod IP. A replica that lags is not counted
+toward `minReplicasToWrite`, and a switchover does not pick it. A
+replica in a full sync of a large data set lags until the sync ends;
+otherwise check the replica's CPU and the network between the two.
+
+**`RedisMemoryNearMaxmemory`**: for 15 minutes an instance with
+`maxmemoryPolicy: noeviction` has used more than 90% of `maxmemory`.
+At `maxmemory` it refuses writes with `OOM`. Raise `spec.memory`, which
+rolls the pods, or delete data. A `Redis` with an eviction policy does
+not fire it, because a full cache evicts.
 
 ## The operator restarts or does nothing
 

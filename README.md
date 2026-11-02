@@ -24,6 +24,9 @@ image upgrades.
   paused, so no write the source accepted is lost.
 - **Staged image upgrades.** A canary replica proves a new image before
   the rest roll, and a canary that fails is rolled back.
+- **Metrics** from redis_exporter beside every instance, and a
+  monitoring component with PodMonitors, alerts, and a Grafana
+  dashboard.
 
 The design of each feature, with the reasons and the test results, is
 in [plans/](plans/): [the design](plans/00-design.md),
@@ -95,6 +98,12 @@ cache   valkey   3           3       cache-0   True     1m
 Each instance runs on a different node, so a `Redis` of three
 instances needs three schedulable nodes.
 
+`kubectl describe redis cache -n example` lists the operator's Events
+for the last hour: each condition that changed, each failover and
+switchover with its cause, and each step of an image rollout. A
+`Backup` has Events for its start and its end. The `troubleshoot`
+skill lists them.
+
 ## Connecting clients
 
 For a `Redis` named `cache`, the operator makes:
@@ -125,6 +134,42 @@ env:
   - name: REDIS_URL
     value: redis://:$(REDIS_PASSWORD)@cache-rw:6379/0
 ```
+
+## Monitoring
+
+Every instance pod runs
+[redis_exporter](https://github.com/oliver006/redis_exporter) in a
+container named `metrics`, which reads its own server over 127.0.0.1
+and serves on port 9121, the container port named `metrics`. The series
+keep redis_exporter's names, such as `redis_up`,
+`redis_memory_used_bytes`, and `redis_connected_slaves`, so dashboards
+and alert rules written for redis_exporter work on them. Each replica
+reports itself, not only the primary. `spec.metrics` turns the exporter
+off, replaces its image, and names single keys for it to check, such as
+a queue's list; the `declare-a-redis` skill has the fields. The
+operator serves its own metrics, prefixed `redis_operator_`, on port
+9200 of its pods.
+
+A cluster that runs the Prometheus Operator takes the component in
+[deploy/monitoring/](deploy/monitoring/) beside the base:
+
+```yaml
+resources:
+  - https://github.com/chrisguidry/redis-operator//deploy?ref=2026.11.01-001
+components:
+  - https://github.com/chrisguidry/redis-operator//deploy/monitoring?ref=2026.11.01-001
+```
+
+It adds a PodMonitor for the operator, a PodMonitor for every Redis
+instance in every namespace, a PrometheusRule of alerts, and a Grafana
+dashboard as a ConfigMap labeled `grafana_dashboard` in the namespace
+`monitoring`. Each instance series carries `namespace`, `pod`, `redis`
+(the `Redis`'s name), and `redis_role` (`primary` or `replica`, the
+label the operator wrote on the pod). The header of
+[deploy/monitoring/kustomization.yaml](deploy/monitoring/kustomization.yaml)
+says how to add the label a Prometheus selects monitors and rules by.
+The `install` skill lists the alerts, and the `troubleshoot` skill says
+what to read when each fires.
 
 ## Agent skills
 
