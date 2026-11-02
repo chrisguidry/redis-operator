@@ -57,6 +57,10 @@ type timings struct {
 	// failureThreshold is how long the primary's manager may go
 	// unanswered before a failover starts.
 	failureThreshold time.Duration
+	// leaderlessThreshold is how long the Lease may have no holder before
+	// a failover starts. It is longer than a lease duration, because a
+	// new target waits out the old holder's Lease before it takes it.
+	leaderlessThreshold time.Duration
 	// pendingWait bounds how long a failover waits for every replica to
 	// report that it detached before it names the next primary.
 	pendingWait time.Duration
@@ -69,12 +73,13 @@ type timings struct {
 }
 
 var defaultTimings = timings{
-	backstop:           2 * time.Second,
-	failureThreshold:   6 * time.Second,
-	pendingWait:        5 * time.Second,
-	switchoverDeadline: 30 * time.Second,
-	switchoverBackoff:  30 * time.Second,
-	pollTimeout:        time.Second,
+	backstop:            2 * time.Second,
+	failureThreshold:    6 * time.Second,
+	leaderlessThreshold: primaryLeaseDuration + 6*time.Second,
+	pendingWait:         5 * time.Second,
+	switchoverDeadline:  30 * time.Second,
+	switchoverBackoff:   30 * time.Second,
+	pollTimeout:         time.Second,
 }
 
 type controller struct {

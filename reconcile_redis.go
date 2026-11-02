@@ -106,8 +106,10 @@ func (d *decision) failover() {
 	switch {
 	case d.st.silentFor(primary, d.now) > t.failureThreshold:
 		reason = fmt.Sprintf("the instance manager of %s has not answered for %s", primary, t.failureThreshold)
-	case d.holder == "" && d.status.CurrentPrimary != "" && !d.st.leaderlessSince.IsZero() && d.now.Sub(d.st.leaderlessSince) > t.failureThreshold:
-		reason = fmt.Sprintf("no instance has held the primary lease for %s", t.failureThreshold)
+	case d.holder == "" && d.targetCannotTake():
+		reason = fmt.Sprintf("%s restarted with no data and cannot take the primary lease", d.status.TargetPrimary)
+	case d.holder == "" && !d.st.leaderlessSince.IsZero() && d.now.Sub(d.st.leaderlessSince) > t.leaderlessThreshold:
+		reason = fmt.Sprintf("no instance has held the primary lease for %s", t.leaderlessThreshold)
 	}
 	if reason == "" {
 		return
@@ -167,6 +169,16 @@ func (d *decision) choosePrimary() {
 	d.c.log.printf("%s: %s is the next primary, at offset %d", d.subject(), best, bestOffset)
 	d.status.TargetPrimary = best
 	d.st.pendingSince = time.Time{}
+	// The new target may wait out the old holder's Lease before it takes
+	// it, so the wait for a holder starts again from here.
+	d.st.leaderlessSince = d.now
+}
+
+// targetCannotTake reports whether the target answered that it has no
+// data, so it will never take the Lease, and waiting for it is no use.
+func (d *decision) targetCannotTake() bool {
+	report, ok := d.st.fresh(d.status.TargetPrimary, d.now, 2*d.c.timings.backstop)
+	return ok && !report.HasData && !report.HoldsLease
 }
 
 // switchover starts a planned switchover when the primary's node is

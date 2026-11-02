@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -214,4 +215,31 @@ func TestARolloutRollsTheReplicasFirstThenSwitchesOver(t *testing.T) {
 	mustMatch(t, status.Switchover.Reason, reasonRollout)
 	mustMatch(t, status.TargetPrimary == "cache-1" || status.TargetPrimary == "cache-2", true)
 	mustMatch(t, h.api.read(podsResource, testNamespace, "cache-0", &gone), true)
+}
+
+// A target waits out the old holder's Lease before it takes it, so a
+// Lease with no holder right after a failover named it is no new
+// failure.
+func TestANewTargetHasTimeToTakeTheLeaseBeforeAnotherFailover(t *testing.T) {
+	h := startHarness(t, 3)
+	h.steady("cache-0", 3)
+	h.pass()
+	h.silence("cache-0")
+	h.passFor(8*time.Second, 2*time.Second)
+	h.holdLease("")
+	h.setReport(instanceReport{Name: "cache-1", Role: reportDetached, Offset: 120, HasData: true})
+	h.setReport(instanceReport{Name: "cache-2", Role: reportDetached, Offset: 90, HasData: true})
+	h.passFor(2*time.Second, 2*time.Second)
+	mustMatch(t, h.redis().Status.TargetPrimary, "cache-1")
+
+	h.passFor(14*time.Second, 2*time.Second)
+
+	failovers := 0
+	for _, line := range h.log.lines() {
+		if strings.Contains(line, "failing over") {
+			failovers++
+		}
+	}
+	mustMatch(t, failovers, 1)
+	mustMatch(t, h.redis().Status.TargetPrimary, "cache-1")
 }

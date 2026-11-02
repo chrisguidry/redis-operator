@@ -59,3 +59,10 @@ coverage-report: coverage.out
 
 coverage.out:
 	$(MAKE) test-go
+
+# e2e is not part of test: it needs Docker and kubectl, and it stands up
+# a four-node k3s cluster in containers. It runs as its own jobs in CI,
+# one per engine. See e2e/run.sh for what it proves.
+.PHONY: e2e
+e2e:
+	timeout 30m bash e2e/run.sh
