@@ -124,6 +124,7 @@ two instances share a machine.
 | Switchover timeout | 10 s | the `FAILOVER ... TIMEOUT` the primary runs |
 | Switchover deadline | 30 s | the operator gives up a switchover after this, and tries again after a 30 s backoff |
 | Manager step | 1 s | how often an instance manager reads the decision and the Lease |
+| Pause gap | 2 s | a manager whose watch records no time for this long was paused, and serves no report until it steps again |
 | `min-replicas-max-lag` | 10 s | |
 | Termination grace | 30 s | a deleted primary waits up to 20 s for its switchover |
 | Route settle | 5 s | how long a primary that steps down waits, after its pod lost the primary label, for kube-proxy to stop sending it new connections |
@@ -204,6 +205,14 @@ stopping. A detached server no longer follows the old primary, so the
 offset it reports is final. A replica that still follows could take
 more writes after it reported. An instance that restarted with no data
 lost what it acknowledged, and a stopping instance cannot be named.
+Without storage, an instance holds no data after its container
+restarts until its link to a primary comes up. A backup's `BGSAVE` and
+a replica's sync each leave a snapshot in its data directory, and that
+snapshot can be older than writes it acknowledged, so the manager
+deletes it before the server starts, and the server starts with no
+keys. A failover that starts before
+such an instance syncs has lost two instances, and it waits for the
+old primary.
 The old primary counts like any other instance once it reports
 `detached`.
 
@@ -364,6 +373,17 @@ fenced itself because the API server is unreachable, cannot tell when
 the label moves, so it waits the demotion hold before it closes the
 clients and changes the role. No client that reaches a primary as it
 steps down is answered `READONLY`.
+
+A manager that comes back from a freeze answers HTTP before its next
+step, and its last report still says what was true before the freeze,
+such as a ready primary that holds the Lease. A watch in the manager
+runs beside the step loop and records the time every quarter of the
+pause gap; a gap longer than that between two records is a pause.
+Until a step that started after the pause replaces the report, `/ready`
+and `/status` answer 503, so the pod is not ready and the operator and
+the peers take the instance as one that did not answer. A slow step is
+not a pause, because the watch keeps running through it, so a primary
+that waits on an unreachable API server stays ready.
 
 A primary whose pod is deleted steps down in the same way and then
 stops its server, which closes the remaining connections.
@@ -627,7 +647,7 @@ using the default user. They run these commands:
 | Who | Commands |
 |---|---|
 | instance manager | `AUTH`, `INFO`, `REPLICAOF`, `CONFIG SET` (`masterauth`, `min-replicas-to-write`, `appendonly`, `port`, `tls-replication`, and the certificate files), `CLIENT PAUSE`, `CLIENT UNPAUSE`, `CLIENT KILL`, `MULTI`, `EXEC`, `DISCARD`, `FAILOVER`, `SHUTDOWN`, `ACL SETUSER`, `ACL DELUSER` |
-| backups | `INFO`, `BGSAVE`, `LASTSAVE` |
+| backups | `INFO`, `BGSAVE` |
 | replication (`masterauth`) | `PSYNC`, `REPLCONF`, `PING` |
 | redis_exporter | `INFO`, `CONFIG GET`, `CLIENT LIST`, `SLOWLOG`, `LATENCY`, `SELECT`, `SCAN`, `TYPE`, the length and value reads of `-check-single-keys`, and `EVAL` for its scripts |
 
@@ -813,7 +833,12 @@ as it sees a pod without TLS.
   Certificate from an issuer is tested against the fake API server
   only. A second writer
   keeps one connection through `<name>-rw` for as long as the server
-  keeps it, as an application's client does. After each scenario, the test checks that the counter is
+  keeps it, as an application's client does. A scenario ends only
+  once the Redis is `Ready` and each instance manager's own report,
+  read through the API server's pod proxy, shows the primary streaming
+  to every other instance, so the next scenario breaks one instance of
+  a Redis whose replicas all hold the data, which is what the quorum
+  tolerates. After each scenario, the test checks that the counter is
   at least the highest confirmed value, that the writer confirms new
   writes, and that the held connection was never answered `READONLY`.
   Scaling up must also draw no `NOREPLICAS`. It does not check that the

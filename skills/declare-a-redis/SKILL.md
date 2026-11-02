@@ -65,7 +65,8 @@ StatefulSet's claim template `data`, the append-only file is on with
 
 Without `storage`, the data lives in an `emptyDir` and in the
 replicas, and snapshots and the append-only file are off. A restarted
-instance comes back empty and copies the data from the primary. If
+instance comes back empty, even when a backup or a replica's sync left
+a snapshot in the `emptyDir`, and copies the data from the primary. If
 every instance restarts at once, the data is gone, the operator starts
 an empty data set on instance 0, and it sets the condition `DataLost`
 with the reason `AllInstancesEmpty`. A `Redis` of one instance without

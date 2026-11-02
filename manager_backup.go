@@ -150,10 +150,13 @@ func (m *manager) snapshotAndUpload(ctx context.Context, backup Backup) (int64, 
 	return stat.Size(), info.offset, nil
 }
 
-// snapshot runs BGSAVE and waits until it finished: LASTSAVE moves past
-// the time before the request, and the last background save succeeded.
+// snapshot runs BGSAVE and waits until it finished: the server's count
+// of saves moves past the count before the request, with no save in
+// progress, and the last background save succeeded. LASTSAVE would do
+// for the count, but it has one-second resolution, and a save that
+// finishes in the same second as an earlier one never moves it.
 func snapshot(ctx context.Context, conn *server) error {
-	before, err := lastSave(ctx, conn)
+	before, err := persistence(ctx, conn)
 	if err != nil {
 		return err
 	}
@@ -170,35 +173,56 @@ func snapshot(ctx context.Context, conn *server) error {
 			return ctx.Err()
 		case <-time.After(200 * time.Millisecond):
 		}
-		after, err := lastSave(ctx, conn)
+		after, err := persistence(ctx, conn)
 		if err != nil {
 			return err
 		}
-		if after <= before {
+		if after.saves <= before.saves || after.saving {
 			continue
 		}
-		reply, err := conn.do(ctx, "INFO", "persistence")
-		if err != nil {
-			return err
-		}
-		text, _ := reply.(string)
-		if !strings.Contains(text, "rdb_last_bgsave_status:ok") {
+		if !after.lastSaveOK {
 			return errors.New("the server's background save failed; its log says why")
 		}
 		return nil
 	}
 }
 
-func lastSave(ctx context.Context, conn *server) (int64, error) {
-	reply, err := conn.do(ctx, "LASTSAVE")
+// saveState is what INFO persistence says about the server's saves.
+type saveState struct {
+	saves      int64
+	saving     bool
+	lastSaveOK bool
+}
+
+func persistence(ctx context.Context, conn *server) (saveState, error) {
+	reply, err := conn.do(ctx, "INFO", "persistence")
 	if err != nil {
-		return 0, err
+		return saveState{}, err
 	}
-	value, ok := reply.(int64)
+	text, ok := reply.(string)
 	if !ok {
-		return 0, fmt.Errorf("LASTSAVE answered %T, not a time", reply)
+		return saveState{}, fmt.Errorf("INFO persistence answered %T, not text", reply)
 	}
-	return value, nil
+	var state saveState
+	found := false
+	for line := range strings.Lines(text) {
+		key, value, _ := strings.Cut(strings.TrimSpace(line), ":")
+		switch key {
+		case "rdb_saves":
+			if state.saves, err = strconv.ParseInt(value, 10, 64); err != nil {
+				return saveState{}, fmt.Errorf("INFO persistence: rdb_saves %q: %w", value, err)
+			}
+			found = true
+		case "rdb_bgsave_in_progress":
+			state.saving = value == "1"
+		case "rdb_last_bgsave_status":
+			state.lastSaveOK = value == "ok"
+		}
+	}
+	if !found {
+		return saveState{}, errors.New("INFO persistence has no rdb_saves")
+	}
+	return state, nil
 }
 
 // restoreIfNeeded downloads the snapshot a new Redis restores from into

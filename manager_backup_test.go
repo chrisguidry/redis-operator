@@ -194,3 +194,23 @@ func TestThePrimaryDeletesADeletedVolumeBackupsFile(t *testing.T) {
 	_, err := os.Stat(path)
 	mustMatch(t, os.IsNotExist(err), true)
 }
+
+// LASTSAVE counts whole seconds, so a snapshot that starts in the same
+// second another save finished must still see its own save finish.
+func TestASnapshotRightAfterAnotherSaveFinishes(t *testing.T) {
+	t.Parallel()
+	for _, engine := range engines {
+		t.Run(engine, func(t *testing.T) {
+			t.Parallel()
+			conn := &server{addr: startTestServer(t, engine).addr, password: testPassword}
+			defer conn.close()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			for range 5 {
+				_, err := conn.do(ctx, "SAVE")
+				mustSucceed(t, err)
+				mustSucceed(t, snapshot(ctx, conn))
+			}
+		})
+	}
+}

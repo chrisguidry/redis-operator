@@ -97,6 +97,11 @@ Each entry is what that pod's instance manager last reported:
 `offset` is the replication offset. A replica far behind the primary's
 offset is still syncing or has a broken link.
 
+An instance manager whose process was paused, as `SIGSTOP` or a frozen
+node pauses it, answers `/status` and `/ready` with 503 until a step
+that started after the pause finishes, so its pod is not ready and the
+operator counts it as not answering for that moment.
+
 ## Logs
 
 The operator's leader holds the Lease `redis-operator` in the
@@ -327,7 +332,12 @@ and its message says how many instances detached and how many the
 failover needs. Bring back the missing instances: a pod that is not
 running, a node that is down, or a NetworkPolicy that keeps the
 operator from port 9123. An instance counts once it reports
-`detached` in `status.instances`. If they will not come back with
+`detached` in `status.instances` and holds data, and the old primary
+counts too once the operator reaches it again. In a `Redis` without
+storage, an instance whose container restarted holds no data until it
+syncs with a primary, so it shows `detached` and does not count: if
+it restarted just before the primary failed, the failover waits for
+the old primary. If they will not come back with
 their data, such as a node lost with its volume, force the failover,
 which loses any write that only they held:
 

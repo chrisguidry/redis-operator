@@ -93,6 +93,7 @@ type managerConfig struct {
 	handoverWait    time.Duration
 	demotionHold    time.Duration
 	routeSettle     time.Duration
+	pauseGap        time.Duration
 }
 
 // instanceReport is what an instance manager says about itself at
@@ -171,8 +172,13 @@ type manager struct {
 	tlsState
 	notes map[string]string
 
-	mutex  sync.Mutex
-	report instanceReport
+	// The report the status endpoints serve, when the step that wrote
+	// it started, and what the pause watch saw (manager_pause.go).
+	mutex         sync.Mutex
+	report        instanceReport
+	reportTakenAt time.Time
+	lastBeat      time.Time
+	resumedAt     time.Time
 }
 
 func newManager(config managerConfig, client *kubeClient, log io.Writer) *manager {
@@ -213,6 +219,11 @@ func (m *manager) run(stop context.Context) error {
 	m.masterauth = m.config.password
 	m.lease.owner = OwnerReference{APIVersion: apiVersion, Kind: redisKind, Name: redis.Metadata.Name, UID: redis.Metadata.UID}
 	m.hasData = m.persist && dataOnDisk(m.config.dataDir)
+	if !m.persist {
+		if err := clearData(m.config.dataDir); err != nil {
+			return err
+		}
+	}
 	if err := m.releaseLeaseIfEmpty(work); err != nil {
 		return err
 	}
@@ -237,6 +248,7 @@ func (m *manager) run(stop context.Context) error {
 	go func() { exited <- cmd.Wait() }()
 	defer m.server.close()
 
+	m.watchForPauses(work)
 	address, err := m.serveStatus(work)
 	if err != nil {
 		_ = cmd.Process.Kill()
@@ -318,16 +330,37 @@ func (m *manager) settings(redis Redis) (serverSettings, error) {
 	}, nil
 }
 
+// serverDataFiles are what a server loads from its data directory when
+// it starts: its append-only directory and its snapshot.
+var serverDataFiles = []string{"appendonlydir", snapshotFile}
+
 // dataOnDisk says whether a persistent server will load data when it
 // starts: an append-only directory or a snapshot is in its data
 // directory.
 func dataOnDisk(dir string) bool {
-	for _, name := range []string{"appendonlydir", "dump.rdb"} {
+	for _, name := range serverDataFiles {
 		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
 			return true
 		}
 	}
 	return false
+}
+
+// clearData removes what a server with no volume left in its data
+// directory before its container restarted. Such a server never saves
+// on its own, but a backup's BGSAVE and a replica's sync from disk both
+// write a snapshot there, and both need the snapshot file, so the
+// server cannot be configured to stop writing it. Loading it at the next
+// start would serve keys from before the restart while the manager
+// reports the instance empty: as a primary that the operator let start
+// with no data, or as a replica before it resyncs.
+func clearData(dir string) error {
+	for _, name := range serverDataFiles {
+		if err := os.RemoveAll(filepath.Join(dir, name)); err != nil {
+			return fmt.Errorf("clearing the data directory: %w", err)
+		}
+	}
+	return nil
 }
 
 // releaseLeaseIfEmpty releases a Lease that this pod still holds from
@@ -356,7 +389,7 @@ func (m *manager) step(ctx context.Context) {
 	apiErr := m.readDecision(ctx, now)
 	info, err := m.server.replication(ctx)
 	if err != nil {
-		m.setReport(instanceReport{Name: m.config.podName, Role: reportStarting, Error: errorText(err)})
+		m.setReport(instanceReport{Name: m.config.podName, Role: reportStarting, Error: errorText(err)}, now)
 		return
 	}
 	if info.role == "slave" && info.linkUp && info.masterHost != detachedHost {
@@ -391,7 +424,7 @@ func (m *manager) step(ctx context.Context) {
 	if after, err := m.server.replication(ctx); err == nil {
 		info = after
 	}
-	m.setReport(m.reportFrom(info, actErr))
+	m.setReport(m.reportFrom(info, actErr), now)
 }
 
 func (m *manager) readDecision(ctx context.Context, now time.Time) error {
@@ -664,10 +697,11 @@ func (m *manager) reportFrom(info replicationInfo, err error) instanceReport {
 	return report
 }
 
-func (m *manager) setReport(report instanceReport) {
+// setReport keeps the report of the step that started at takenAt.
+func (m *manager) setReport(report instanceReport, takenAt time.Time) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
-	m.report = report
+	m.report, m.reportTakenAt = report, takenAt
 }
 
 func (m *manager) currentReport() instanceReport {
@@ -683,12 +717,19 @@ func (m *manager) serveStatus(ctx context.Context) (net.Addr, error) {
 		return nil, err
 	}
 	mux := http.NewServeMux()
+	// The operator and the peers take a refused /status as a manager
+	// that did not answer, which is what a paused one is until it steps.
 	mux.HandleFunc("/status", func(w http.ResponseWriter, _ *http.Request) {
+		report, live := m.liveReport(time.Now())
+		if !live {
+			http.Error(w, "paused since the last step", http.StatusServiceUnavailable)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(m.currentReport())
+		_ = json.NewEncoder(w).Encode(report)
 	})
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, _ *http.Request) {
-		if !m.currentReport().Ready {
+		if report, live := m.liveReport(time.Now()); !live || !report.Ready {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
 	})

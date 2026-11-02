@@ -187,7 +187,10 @@ The instance manager:
   certificate loaded, both read from Secrets on every step
   ([01-high-availability.md](01-high-availability.md));
 - serves its state on port 9123: `/status` for the operator, `/ready`
-  for the readiness probe, `/healthz` for the liveness probe;
+  for the readiness probe, `/healthz` for the liveness probe, and
+  serves neither `/status` nor a ready `/ready` from a report taken
+  before its process was paused
+  ([01-high-availability.md](01-high-availability.md));
 - takes the snapshot of a running `Backup` that names it, restores a new
   `Redis` from a snapshot before its server starts, and makes the Lease
   holder follow the source in replica mode

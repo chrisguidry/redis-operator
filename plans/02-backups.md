@@ -115,8 +115,9 @@ them by name, through a Role that names the Secrets they may read and no others.
    the store, the object key, and `startedAt`.
 2. That instance's manager sees a running `Backup` that names it, once
    it holds data, so a replica that has not synced never uploads an
-   empty snapshot. It runs `BGSAVE`, waits until `LASTSAVE` moves past
-   the time it asked, and uploads `dump.rdb` from its data directory with a SigV4-signed
+   empty snapshot. It runs `BGSAVE`, waits until `rdb_saves` in `INFO
+   persistence` moves past its count before the request with no save
+   in progress, and uploads `dump.rdb` from its data directory with a SigV4-signed
    `PUT`, or writes the file to the volume. It writes `phase: Completed`
    with the size and the offset it read before the snapshot, or
    `phase: Failed` with the error. It gives up after 50 minutes.
