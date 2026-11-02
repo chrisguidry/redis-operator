@@ -79,9 +79,13 @@ func children(r *Redis, operatorImage string) []child {
 		service(r, name+"-nodes", map[string]string{clusterLabel: name}, true),
 		{budgetsResource, name + "-replicas", map[string]any{
 			"apiVersion": "policy/v1", "kind": "PodDisruptionBudget", "metadata": childMeta(r, name+"-replicas", nil),
+			// One replica may go at a time. The budget states how many
+			// must stay, because the disruption controller counts a
+			// maxUnavailable budget against the StatefulSet's whole
+			// scale, primary included, and would allow no eviction.
 			"spec": map[string]any{
-				"maxUnavailable": 1,
-				"selector":       map[string]any{"matchLabels": map[string]string{clusterLabel: name, roleLabel: roleReplica}},
+				"minAvailable": max(r.Spec.instances()-2, 0),
+				"selector":     map[string]any{"matchLabels": map[string]string{clusterLabel: name, roleLabel: roleReplica}},
 			},
 		}},
 		statefulSet(r, operatorImage),

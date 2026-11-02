@@ -65,7 +65,7 @@ every name starts with the resource's name.
 | Secret | `<name>-app` | `password`, `host`, `port`, `uri`, `ro-uri` |
 | ServiceAccount, Role, RoleBinding | `<name>` | what the instance managers may read and write |
 | PodDisruptionBudget | `<name>-primary` | `minAvailable: 1` on the primary, when instances > 1 |
-| PodDisruptionBudget | `<name>-replicas` | `maxUnavailable: 1` on the replicas |
+| PodDisruptionBudget | `<name>-replicas` | `minAvailable: instances - 2` on the replicas, so one may go at a time |
 | Lease | `<name>-primary` | held by the primary's instance manager |
 
 The operator writes the label `redis.guid.foo/role` on each pod, from the
@@ -161,3 +161,5 @@ These stay in this milestone and ship in its second release:
   API server and its peers while its clients can still reach it.
 - Scaling down when the primary's ordinal is beyond the new count,
   through a switchover first.
+- An Event for each condition transition, as liken's `events` package
+  posts them. The first release logs each decision instead.

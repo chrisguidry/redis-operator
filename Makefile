@@ -26,9 +26,11 @@ UNTESTED_PACKAGES := go list -f '{{if not (or .TestGoFiles .XTestGoFiles)}}{{.Im
 # so the tests run the same servers a cluster does. It needs Docker.
 SERVERS := $(CURDIR)/.servers
 DEFAULT_IMAGES := $(shell sed -n 's/^[[:space:]]*engine\(Redis\|Valkey\): *"\(.*\)",$$/\2/p' api_redis.go)
+# The backup tests store their objects in a real SeaweedFS S3 server.
+SEAWEEDFS_IMAGE := chrislusf/seaweedfs:4.51
 export PATH := $(SERVERS):$(PATH)
 
-$(SERVERS)/.images: api_redis.go
+$(SERVERS)/.images: api_redis.go Makefile
 	mkdir -p $(SERVERS)
 	for image in $(DEFAULT_IMAGES); do \
 	  case $$image in valkey*) binary=valkey-server ;; *) binary=redis-server ;; esac; \
@@ -36,7 +38,10 @@ $(SERVERS)/.images: api_redis.go
 	  docker cp -L $$container:/usr/local/bin/$$binary $(SERVERS)/$$binary && \
 	  docker rm $$container >/dev/null || exit 1; \
 	done
-	echo $(DEFAULT_IMAGES) > $@
+	container=$$(docker create $(SEAWEEDFS_IMAGE)) && \
+	  docker cp -L $$container:/usr/bin/weed $(SERVERS)/weed && \
+	  docker rm $$container >/dev/null
+	echo $(DEFAULT_IMAGES) $(SEAWEEDFS_IMAGE) > $@
 
 .PHONY: servers
 servers: $(SERVERS)/.images

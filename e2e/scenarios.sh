@@ -53,6 +53,33 @@ scenario_freeze_primary() {
   assert_no_confirmed_write_lost "freezing the primary"
 }
 
+# scenario_partition_primary cuts the primary off from the API server,
+# its peers, the operator, and its clients with a NetworkPolicy that
+# admits nothing in or out, the way a network split leaves a machine.
+# k3s enforces NetworkPolicy, and the kubelet's probes still reach the
+# pod, as they do through a real split's node-local path.
+scenario_partition_primary() {
+  local old
+  old=$(primary)
+  log "scenario: partition the primary $old for 45 seconds"
+  kubectl -n "$NS" apply -f - >/dev/null <<YAML
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: partition
+spec:
+  podSelector:
+    matchLabels:
+      statefulset.kubernetes.io/pod-name: $old
+  policyTypes: [Ingress, Egress]
+YAML
+  retry "a new primary" 90 primary_is_not "$old"
+  sleep 15
+  kubectl -n "$NS" delete networkpolicy partition >/dev/null
+  wait_ready 180
+  assert_no_confirmed_write_lost "partitioning the primary"
+}
+
 scenario_rollout() {
   log "scenario: change memory, so the operator rolls every pod"
   kubectl -n "$NS" patch redis cache --type=merge -p '{"spec":{"memory":"160Mi"}}' >/dev/null

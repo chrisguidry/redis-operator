@@ -82,6 +82,7 @@ scenario_delete_primary
 scenario_drain_primary_node
 scenario_operator_down
 scenario_freeze_primary
+scenario_partition_primary
 scenario_rollout
 
 log "all scenarios passed on $ENGINE"

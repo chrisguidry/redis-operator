@@ -36,7 +36,7 @@ env:
 jobs:
   release:
     runs-on: ubuntu-26.04
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
       # git describe needs the tags, so the checkout fetches the whole
       # history.
@@ -111,7 +111,8 @@ jobs:
             ${{ env.IMAGE }}:latest
 
       # No image ships from a red gate. ci.yaml runs beside this
-      # workflow on a push to main, and this step waits for it. A tag's
+      # workflow on a push to main, and this step waits for it, the
+      # end-to-end jobs included. A tag's
       # ci run finished when its commit reached main, so a tag does not
       # wait. A tag on a commit with no ci run fails: run ci on that
       # commit, then push the tag again. GITHUB_SHA names the tag object
@@ -121,7 +122,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           commit=$(git rev-parse "${GITHUB_SHA}^{commit}")
-          for _ in $(seq 1 40); do
+          for _ in $(seq 1 140); do
             state=$(gh run list --workflow ci.yaml --commit "$commit" --event push \
               --json status,conclusion --jq '.[0] | "\(.status) \(.conclusion)"')
             case "$state" in
@@ -141,7 +142,7 @@ jobs:
             esac
             sleep 15
           done
-          echo "the ci run for $commit did not finish within ten minutes" >&2
+          echo "the ci run for $commit did not finish within 35 minutes" >&2
           exit 1
 
       # :latest is the newest release. A development build pushes its

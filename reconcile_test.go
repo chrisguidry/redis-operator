@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -242,4 +243,29 @@ func TestANewTargetHasTimeToTakeTheLeaseBeforeAnotherFailover(t *testing.T) {
 	}
 	mustMatch(t, failovers, 1)
 	mustMatch(t, h.redis().Status.TargetPrimary, "cache-1")
+}
+
+// The replicas' budget lets one replica go at a time. A maxUnavailable
+// budget on part of a StatefulSet's pods is counted against the
+// StatefulSet's whole scale, and allows no eviction at all, so the
+// budget states the replicas that must stay.
+func TestTheReplicaBudgetKeepsAllButOneReplica(t *testing.T) {
+	cases := []struct {
+		instances int
+		want      int
+	}{{2, 0}, {3, 1}, {5, 3}}
+	for _, c := range cases {
+		t.Run(strconv.Itoa(c.instances), func(t *testing.T) {
+			h := startHarness(t, c.instances)
+
+			h.pass()
+
+			var budget map[string]any
+			h.api.read(budgetsResource, testNamespace, "cache-replicas", &budget)
+			spec := budget["spec"].(map[string]any)
+			mustMatch(t, spec["minAvailable"], any(float64(c.want)))
+			_, hasMax := spec["maxUnavailable"]
+			mustMatch(t, hasMax, false)
+		})
+	}
 }
