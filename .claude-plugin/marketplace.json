@@ -1,0 +1,17 @@
+{
+  "name": "redis-operator",
+  "owner": {
+    "name": "Chris Guidry",
+    "url": "https://github.com/chrisguidry"
+  },
+  "metadata": {
+    "description": "The agent skills for redis-operator, a Kubernetes operator for Redis and Valkey."
+  },
+  "plugins": [
+    {
+      "name": "redis-operator",
+      "source": "./",
+      "description": "Install redis-operator, declare a Redis or Valkey, back it up and restore it, adopt an existing server, upgrade, and troubleshoot."
+    }
+  ]
+}

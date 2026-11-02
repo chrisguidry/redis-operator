@@ -1,0 +1,12 @@
+{
+  "name": "redis-operator",
+  "description": "Install redis-operator, declare a Redis or Valkey, back it up and restore it, adopt an existing server, upgrade, and troubleshoot.",
+  "author": {
+    "name": "Chris Guidry",
+    "url": "https://github.com/chrisguidry"
+  },
+  "homepage": "https://github.com/chrisguidry/redis-operator",
+  "repository": "https://github.com/chrisguidry/redis-operator",
+  "license": "MIT",
+  "keywords": ["kubernetes", "redis", "valkey", "operator"]
+}

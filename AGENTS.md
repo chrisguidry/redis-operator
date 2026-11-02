@@ -42,9 +42,17 @@ operator (no argument), `manager`, `install DIR`, and `version`.
   sample `Redis`.
 - `e2e/`: the end-to-end scripts.
 - `plans/`: one document for each milestone.
+- `skills/`: one guide for each task a user does with the operator, as
+  an Agent Skill (`skills/<name>/SKILL.md`). `.claude-plugin/` makes the
+  repository a plugin marketplace that installs them, for Claude Code
+  and for Codex.
 
 ## Conventions
 
+- A change to what the operator does, such as a field, a default, a
+  port, a condition reason, or a command, changes the text in `skills/`
+  and `README.md` that describes it in the same commit, as it does the
+  plan.
 - The operator is level-triggered. It keeps no state that the API
   server does not hold, except what time measures (`redisState` in
   `reconcile.go`). Each decision is a write to a status field, made with
