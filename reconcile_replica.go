@@ -26,6 +26,7 @@ func (d *decision) replica(ctx context.Context) {
 	case status == nil && spec != nil && spec.Enabled && d.status.CurrentPrimary == "":
 		d.status.Replica = &ReplicaStatus{Phase: replicaReplicating}
 		d.c.log.printf("%s: replicating from its source", d.subject())
+		d.note(eventNormal, "ReplicaModeStarted", "replicating from the source that spec.replica names")
 	case status == nil && spec != nil && spec.Enabled:
 		d.setCondition("Adopted", ConditionFalse, "AlreadyPrimary", "replica mode starts only on a new Redis; this one has served as a primary")
 	case status == nil:
@@ -148,6 +149,7 @@ func (d *decision) startPromotion(ctx context.Context) {
 		return
 	}
 	d.c.log.printf("%s: promoting: paused writes on the source %s for %s", d.subject(), address, sourcePause)
+	d.note(eventNormal, "PromotionStarted", fmt.Sprintf("paused writes on the source %s for %s, to promote once the holder has every write", address, sourcePause))
 	d.status.Replica.Phase = replicaPromoting
 }
 

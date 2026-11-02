@@ -11,6 +11,21 @@ scenario_delete_primary() {
   retry "a new primary" 120 primary_is_not "$old"
   wait_ready 180
   assert_no_confirmed_write_lost "deleting the primary"
+  retry "an Event that the primary moved off $old" 30 primary_move_event "$old"
+}
+
+# primary_move_event checks that the Redis has an Event for the
+# switchover or the failover that moved the primary off $1, as
+# `kubectl get events` lists it. Deleting the primary's pod usually
+# starts a switchover (PodDeleted); a pod that stops before its manager
+# asks for one starts a failover instead.
+primary_move_event() {
+  local events
+  events=$(kubectl -n "$NS" get events \
+    --field-selector involvedObject.kind=Redis,involvedObject.name=cache \
+    -o jsonpath='{range .items[*]}{.reason} {.message}{"\n"}{end}')
+  echo "$events"
+  grep -Eq "^(SwitchoverStarted moving the primary from $1 |FailoverStarted failing over from $1:)" <<<"$events"
 }
 
 scenario_drain_primary_node() {

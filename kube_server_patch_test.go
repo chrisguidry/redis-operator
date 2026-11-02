@@ -12,7 +12,9 @@ import (
 )
 
 // serveCreate stores the object in the body under the name in its
-// metadata, in the collection of the path.
+// metadata, in the collection of the path. An object with no name and
+// a generateName gets the generateName and a suffix, as the API server
+// names it.
 func (f *fakeKube) serveCreate(w http.ResponseWriter, collection fakeKey, body []byte) {
 	var object map[string]any
 	if err := json.Unmarshal(body, &object); err != nil {
@@ -20,13 +22,16 @@ func (f *fakeKube) serveCreate(w http.ResponseWriter, collection fakeKey, body [
 		return
 	}
 	meta := metadataOf(object)
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+	if stringAt(meta, "name") == "" && stringAt(meta, "generateName") != "" {
+		meta["name"] = fmt.Sprintf("%s%05x", stringAt(meta, "generateName"), f.version+1)
+	}
 	key := fakeKey{collection.resource, collection.namespace, stringAt(meta, "name")}
 	meta["namespace"] = key.namespace
 	if key.namespace == "" {
 		delete(meta, "namespace")
 	}
-	f.mutex.Lock()
-	defer f.mutex.Unlock()
 	if _, exists := f.objects[key]; exists {
 		writeKubeStatus(w, http.StatusConflict, key.name+" already exists")
 		return

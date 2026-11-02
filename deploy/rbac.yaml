@@ -39,6 +39,11 @@ rules:
   - apiGroups: [""]
     resources: [nodes]
     verbs: [list, watch]
+  # The operator posts an Event for each decision on the Redis or the
+  # Backup it is about, and patches the count of an Event that repeats.
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create, patch]
   # The children of each Redis are written with server-side apply, which
   # the API server authorizes as a create for an object that does not
   # exist yet.

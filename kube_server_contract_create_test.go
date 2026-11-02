@@ -1,9 +1,15 @@
 package main
 
 // These tests hold fakeKube to the API server's rules for a create and
-// a merge patch through kubeClient, which the Lease relies on.
+// a merge patch through kubeClient, which the Lease and the Events rely
+// on.
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+)
 
 func TestFakeKubeCreatesAnObjectThroughTheClient(t *testing.T) {
 	api := startFakeKube(t)
@@ -53,4 +59,30 @@ func TestFakeKubeRefusesAMergePatchAtAnOldVersion(t *testing.T) {
 	}, nil)
 
 	mustMatch(t, err, errConflict)
+}
+
+func TestFakeKubeNamesACreateFromItsGenerateName(t *testing.T) {
+	api := startFakeKube(t)
+
+	var got widget
+	err := api.client.create(t.Context(), widgets, "shop", map[string]any{
+		"apiVersion": "example.com/v1", "kind": "Widget",
+		"metadata": map[string]any{"generateName": "gear."},
+	}, &got)
+
+	mustSucceed(t, err)
+	mustMatch(t, got.Metadata.Name, "gear.00001")
+	mustMatch(t, api.read(widgets, "shop", "gear.00001", &widget{}), true)
+}
+
+func TestFakeKubeHoldsARequestItHangsUntilTheClientGivesUp(t *testing.T) {
+	api := startFakeKube(t)
+	api.hang("POST", widgets.path("shop", ""))
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+
+	err := api.client.create(ctx, widgets, "shop", newWidget("shop", "gear"), nil)
+
+	mustMatch(t, errors.Is(err, context.DeadlineExceeded), true)
+	mustMatch(t, api.read(widgets, "shop", "gear", &widget{}), false)
 }

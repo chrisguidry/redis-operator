@@ -26,7 +26,9 @@ func (c *controller) reconcileBackups(ctx context.Context, w *world) {
 	for _, r := range w.redis {
 		byRedis[objectKey(r.Metadata)] = r
 	}
+	c.forgetBackups(w.backups)
 	for _, backup := range w.backups {
+		c.observeBackup(backup)
 		subject := "backup " + objectKey(backup.Metadata)
 		if err := c.reconcileBackup(ctx, backup, byRedis, w.pods); err != nil {
 			c.log.fault(subject, topicReconcile, errorText(err))
@@ -145,20 +147,31 @@ func (c *controller) startBackup(ctx context.Context, backup Backup, r Redis) er
 		parts = append([]string{prefix}, parts...)
 	}
 	c.log.printf("backup %s: %s takes the snapshot", objectKey(backup.Metadata), instance)
-	return c.client.mergePatchStatus(ctx, backupsResource, backup.Metadata.Namespace, backup.Metadata.Name, map[string]any{
+	key := strings.Join(parts, "/")
+	err := c.client.mergePatchStatus(ctx, backupsResource, backup.Metadata.Namespace, backup.Metadata.Name, map[string]any{
 		"metadata": map[string]any{"resourceVersion": backup.Metadata.ResourceVersion},
 		"status": BackupStatus{
 			Phase: backupRunning, Instance: instance, Store: &store,
-			Key: strings.Join(parts, "/"), StartedAt: c.now().UTC().Format(time.RFC3339),
+			Key: key, StartedAt: c.now().UTC().Format(time.RFC3339),
 		},
 	}, nil)
+	if err == nil {
+		c.events.normal(referenceTo(backupKind, backup.Metadata), "Started", fmt.Sprintf("%s takes the snapshot, to %s", instance, key))
+	}
+	return err
 }
 
 func (c *controller) failBackup(ctx context.Context, backup Backup, reason string) error {
 	c.log.printf("backup %s: failed: %s", objectKey(backup.Metadata), reason)
-	return c.client.mergePatchStatus(ctx, backupsResource, backup.Metadata.Namespace, backup.Metadata.Name, map[string]any{
+	err := c.client.mergePatchStatus(ctx, backupsResource, backup.Metadata.Namespace, backup.Metadata.Name, map[string]any{
 		"status": map[string]any{"phase": backupFailed, "error": reason, "completedAt": c.now().UTC().Format(time.RFC3339)},
 	}, nil)
+	if err == nil {
+		// The pass that reads this phase back posts nothing more.
+		c.backupPhases[backup.Metadata.UID] = backupFailed
+		c.events.warning(referenceTo(backupKind, backup.Metadata), "Failed", reason)
+	}
+	return err
 }
 
 // finishBackupDelete deletes a deleted Backup's object, then lets the
@@ -227,6 +240,7 @@ func (c *controller) reconcileSchedule(ctx context.Context, scheduled ScheduledB
 		return fmt.Errorf("creating backup %s: %w", name, err)
 	}
 	c.log.printf("scheduledbackup %s: created backup %s", objectKey(scheduled.Metadata), name)
+	c.events.normal(referenceTo(scheduledBackupKind, scheduled.Metadata), "BackupCreated", fmt.Sprintf("created the Backup %s on the schedule", name))
 	return c.client.mergePatchStatus(ctx, scheduledBackupsResource, scheduled.Metadata.Namespace, scheduled.Metadata.Name, map[string]any{
 		"status": ScheduledBackupStatus{LastScheduleTime: c.now().UTC().Format(time.RFC3339), LastBackup: name},
 	}, nil)
@@ -260,6 +274,7 @@ func (c *controller) applyRetention(ctx context.Context, r Redis, backups []Back
 		if err != nil && !errors.Is(err, errNotFound) {
 			return err
 		}
+		c.events.normal(referenceTo(redisKind, r.Metadata), "BackupDeleted", fmt.Sprintf("deleted the Backup %s, older than the retention of %s", backup.Metadata.Name, r.Spec.Backup.Retention))
 	}
 	return nil
 }

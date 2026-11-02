@@ -83,8 +83,12 @@ func (c *controller) reconcile(ctx context.Context, r *Redis, w *world) error {
 		return err
 	}
 	d.summarize(pods)
-	if err := c.writeStatus(ctx, r, status); err != nil {
+	landed, err := c.writeStatus(ctx, r, status)
+	if err != nil {
 		return err
+	}
+	if landed {
+		c.postDecisions(r, &d)
 	}
 	return c.labelRoles(ctx, pods, holder, status.TargetPrimary)
 }
@@ -100,6 +104,9 @@ type decision struct {
 	nodes  map[string]Node
 	holder string
 	now    time.Time
+	// notes are the Events of this pass's decisions, which the pass
+	// posts once the status lands.
+	notes []eventNote
 }
 
 func (d *decision) subject() string { return "redis " + objectKey(d.r.Metadata) }
@@ -134,6 +141,7 @@ func (d *decision) failover() {
 		return
 	}
 	d.c.log.printf("%s: failing over: %s", d.subject(), reason)
+	d.note(eventWarning, "FailoverStarted", fmt.Sprintf("failing over from %s: %s", primary, reason))
 	d.c.readings.failovers.Inc()
 	d.status.TargetPrimary = targetPending
 	d.status.Switchover = nil
@@ -182,9 +190,11 @@ func (d *decision) choosePrimary() {
 		d.st.pendingSince = time.Time{}
 		if d.status.replicating() {
 			d.c.log.printf("%s: every instance restarted with no data; %s copies the source again", d.subject(), first)
+			d.note(eventWarning, "AllInstancesEmpty", fmt.Sprintf("every instance restarted with no data; %s copies the source again", first))
 			return
 		}
 		d.c.log.printf("%s: every instance restarted with no data; starting an empty dataset on %s", d.subject(), first)
+		d.note(eventWarning, "AllInstancesEmpty", fmt.Sprintf("every instance restarted with no data; starting an empty dataset on %s", first))
 		d.setCondition("DataLost", ConditionTrue, "AllInstancesEmpty", "every instance restarted with no data, so the dataset started empty")
 		return
 	}
@@ -192,6 +202,7 @@ func (d *decision) choosePrimary() {
 		return
 	}
 	d.c.log.printf("%s: %s is the next primary, at offset %d", d.subject(), best, bestOffset)
+	d.note(eventNormal, "PrimaryChosen", fmt.Sprintf("%s is the next primary, at offset %d", best, bestOffset))
 	d.status.TargetPrimary = best
 	d.st.pendingSince = time.Time{}
 	// The new target may wait out the old holder's Lease before it takes
@@ -225,6 +236,7 @@ func (d *decision) switchover(updateRevision string) {
 		switch {
 		case d.holder == s.To:
 			d.c.log.printf("%s: switchover from %s to %s done", d.subject(), s.From, s.To)
+			d.note(eventNormal, "SwitchoverDone", fmt.Sprintf("%s is primary, in place of %s (%s)", s.To, s.From, s.Reason))
 			d.status.Switchover = nil
 		case d.now.Sub(started) > d.c.timings.switchoverDeadline:
 			d.c.log.printf("%s: switchover from %s to %s did not finish in %s; %s stays primary", d.subject(), s.From, s.To, d.c.timings.switchoverDeadline, s.From)
@@ -264,6 +276,7 @@ func (d *decision) switchover(updateRevision string) {
 	}
 	d.c.log.clear(d.subject(), "switchover")
 	d.c.log.printf("%s: switching over from %s to %s: %s", d.subject(), d.holder, to, reason)
+	d.note(eventNormal, "SwitchoverStarted", switchoverMessage(d.holder, to, reason))
 	d.c.readings.switchovers.WithLabelValues(reason).Inc()
 	d.status.TargetPrimary = to
 	d.status.Switchover = &SwitchoverStatus{From: d.holder, To: to, Reason: reason, StartedAt: d.now.UTC().Format(time.RFC3339)}
@@ -331,6 +344,7 @@ func (c *controller) roll(ctx context.Context, d *decision, updateRevision strin
 			if err != nil && !errors.Is(err, errNotFound) {
 				return fmt.Errorf("deleting pod %s: %w", name, err)
 			}
+			c.events.normal(referenceTo(redisKind, d.r.Metadata), "RollingInstance", fmt.Sprintf("deleted %s, which is down, so it starts on the current revision", name))
 			return nil
 		}
 	}
@@ -357,6 +371,7 @@ func (c *controller) roll(ctx context.Context, d *decision, updateRevision strin
 		if err != nil && !errors.Is(err, errNotFound) {
 			return fmt.Errorf("deleting pod %s: %w", name, err)
 		}
+		c.events.normal(referenceTo(redisKind, d.r.Metadata), "RollingInstance", fmt.Sprintf("deleted %s so it starts on the new revision", name))
 		return nil
 	}
 	return nil
@@ -439,18 +454,19 @@ func (d *decision) setCondition(kind string, status ConditionStatus, reason, mes
 
 // writeStatus writes the status when it changed, with the
 // resourceVersion read, so it fails rather than overwrite a newer
-// decision.
-func (c *controller) writeStatus(ctx context.Context, r *Redis, status RedisStatus) error {
+// decision. It reports whether the status as composed now stands: it
+// was written, or it was already the status read.
+func (c *controller) writeStatus(ctx context.Context, r *Redis, status RedisStatus) (bool, error) {
 	if reflect.DeepEqual(status, r.Status) {
-		return nil
+		return true, nil
 	}
 	body, err := json.Marshal(status)
 	if err != nil {
-		return err
+		return false, err
 	}
 	var fields map[string]any
 	if err := json.Unmarshal(body, &fields); err != nil {
-		return err
+		return false, err
 	}
 	// A merge patch keeps a field it does not state, so a field that is
 	// no longer set, such as the end of a switchover or the current
@@ -468,9 +484,9 @@ func (c *controller) writeStatus(ctx context.Context, r *Redis, status RedisStat
 	if errors.Is(err, errConflict) {
 		// The Redis changed since this pass read it. The watch brings
 		// the change, and the next pass decides again from it.
-		return nil
+		return false, nil
 	}
-	return err
+	return err == nil, err
 }
 
 func cloneSwitchover(s *SwitchoverStatus) *SwitchoverStatus {

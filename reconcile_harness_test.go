@@ -153,6 +153,7 @@ func (h *harness) pass() {
 		mustSucceed(h.t, err)
 		var running sync.WaitGroup
 		h.c.watch(h.t.Context(), &running, versions)
+		running.Go(func() { h.c.events.run(h.t.Context(), time.Millisecond, time.Second) })
 		h.t.Cleanup(running.Wait)
 	}
 	eventually(h.t, "the stores hold the cluster", h.synced)

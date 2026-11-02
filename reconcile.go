@@ -79,6 +79,12 @@ type timings struct {
 	// canaryLagBytes is how far behind the primary a canary may be and
 	// still count as caught up.
 	canaryLagBytes int64
+	// eventTimeout bounds each write of an Event, and eventRetryWait is
+	// the time between two sends of one write. An API server that
+	// restarts refuses connections for some seconds, which the retries
+	// cover.
+	eventTimeout   time.Duration
+	eventRetryWait time.Duration
 }
 
 var defaultTimings = timings{
@@ -92,6 +98,8 @@ var defaultTimings = timings{
 	canarySoak:          defaultCanarySoak,
 	canaryTimeout:       defaultCanaryTimeout,
 	canaryLagBytes:      1 << 20,
+	eventTimeout:        5 * time.Second,
+	eventRetryWait:      10 * time.Second,
 }
 
 type controller struct {
@@ -99,6 +107,7 @@ type controller struct {
 	readings      *metrics
 	now           func() time.Time
 	log           *lineLog
+	events        *eventRecorder
 	wake          chan struct{}
 	timings       timings
 	operatorImage string
@@ -106,8 +115,9 @@ type controller struct {
 	poller        *http.Client
 	watches       map[kubeResource]*collectionWatch
 
-	// states is read and written by the pass only.
-	states map[string]*redisState
+	// states and backupPhases are read and written by the pass only.
+	states       map[string]*redisState
+	backupPhases map[string]string
 }
 
 // redisState is what the operator remembers about one Redis.
@@ -146,7 +156,9 @@ func newController(client *kubeClient, readings *metrics, operatorImage string, 
 		statusPort:    statusPort,
 		watches:       map[kubeResource]*collectionWatch{},
 		states:        map[string]*redisState{},
+		backupPhases:  map[string]string{},
 	}
+	c.events = newEventRecorder(client, now, c.log)
 	c.poller = &http.Client{Timeout: c.timings.pollTimeout}
 	for _, resource := range watchedCollections {
 		c.watches[resource] = newCollectionWatch(client, resource, "", selectors[resource], trims[resource], c.wake, readings.watchRestarted(resource.Resource))
@@ -169,6 +181,7 @@ func (c *controller) run(ctx context.Context) error {
 	var running sync.WaitGroup
 	defer running.Wait()
 	c.watch(ctx, &running, versions)
+	running.Go(func() { c.events.run(ctx, c.timings.eventRetryWait, c.timings.eventTimeout) })
 
 	ticker := time.NewTicker(c.timings.backstop)
 	defer ticker.Stop()
