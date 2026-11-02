@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -25,6 +27,10 @@ type managerHarness struct {
 	// mounts, as a ReadWriteMany claim or an NFS export is.
 	backupDir  string
 	restoreDir string
+	// tlsSecret is the certificate's Secret of each instance that start
+	// runs next, or empty for an instance without TLS.
+	tlsSecret string
+	tlsPort   int
 }
 
 type runningManager struct {
@@ -45,7 +51,7 @@ func startManagerHarnessOn(t *testing.T, api *fakeKube, name, engine string, ins
 	t.Helper()
 	h := &managerHarness{
 		t: t, api: api, name: name,
-		port: freePort(t), statusAt: freePort(t),
+		port: freePort(t), statusAt: freePort(t), tlsPort: freePort(t),
 		instances: map[string]*runningManager{},
 		backupDir: t.TempDir(), restoreDir: t.TempDir(),
 	}
@@ -121,6 +127,7 @@ func (h *managerHarness) start(name, dir string) {
 		port: h.port, statusPort: h.statusAt, dataDir: dir,
 		configPath: filepath.Join(dir, "server.conf"), password: testPassword,
 		backupDir: h.backupDir, restoreDir: h.restoreDir,
+		tlsSecret: h.tlsSecret, tlsDir: filepath.Join(dir, "tls"), tlsPort: h.tlsPort,
 		leaseDuration: 1500 * time.Millisecond, renewDeadline: time.Second,
 		retryPeriod: 200 * time.Millisecond, stepPeriod: 100 * time.Millisecond,
 		failoverTimeout: 3 * time.Second, handoverWait: 3 * time.Second,
@@ -271,6 +278,44 @@ func TestMovingTheTargetHandsThePrimaryRoleOver(t *testing.T) {
 			mustMatch(t, got, any("value"))
 		})
 	}
+}
+
+// FAILOVER leaves the old primary a replica of the new one, and the
+// new primary counts it toward min-replicas-to-write. If the old
+// primary let go of that link while the Lease was empty, the new
+// primary would refuse writes with NOREPLICAS until it came back.
+func TestTheOldPrimaryKeepsStreamingFromTheNewOneAcrossASwitchover(t *testing.T) {
+	for _, engine := range engines {
+		t.Run(engine, func(t *testing.T) {
+			h := twoInstances(t, engine)
+
+			h.switchTo("cache-1")
+
+			h.waitFor("cache-0 follows cache-1 with its link up", func() bool {
+				report := h.report("cache-0")
+				return h.holder() == "cache-1" && report.LinkUp && report.Following == h.ip("cache-1")
+			})
+			mustMatch(t, partialSyncs(t, h.client("cache-1")), 1)
+		})
+	}
+}
+
+// partialSyncs is how many partial resynchronizations the server
+// accepted from its replicas. A replica that reconnects to the same
+// primary resynchronizes partially, so this counts the cuts in its link.
+func partialSyncs(t *testing.T, s *server) int {
+	t.Helper()
+	reply, err := s.do(context.Background(), "INFO", "stats")
+	mustSucceed(t, err)
+	for line := range strings.SplitSeq(reply.(string), "\n") {
+		if count, found := strings.CutPrefix(strings.TrimSpace(line), "sync_partial_ok:"); found {
+			n, err := strconv.Atoi(count)
+			mustSucceed(t, err)
+			return n
+		}
+	}
+	t.Fatal("INFO stats has no sync_partial_ok")
+	return 0
 }
 
 func TestAPendingTargetDetachesEveryInstance(t *testing.T) {

@@ -82,6 +82,11 @@ func (m *manager) followSource(ctx context.Context, info replicationInfo) error 
 	if err := m.setMasterauth(ctx, password); err != nil {
 		return err
 	}
+	// The source is outside the operator, and is followed over
+	// plaintext.
+	if err := m.setTLSReplication(ctx, false); err != nil {
+		return err
+	}
 	sentinelPassword, err := readSentinelPassword(ctx, m.client, m.config.namespace, m.replicaSource)
 	if err != nil {
 		return err

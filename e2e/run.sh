@@ -16,7 +16,7 @@ ENGINE=${ENGINE:-redis}
 NS=e2e
 # SCENARIOS names the scenarios to run, in order, such as
 # SCENARIOS=adoption to run one of them alone.
-SCENARIOS=${SCENARIOS:-delete_primary drain_primary_node operator_down freeze_primary partition_primary metrics backup_restore backup_restore_volume adoption rollout scale single_instance upgrade broken_image}
+SCENARIOS=${SCENARIOS:-delete_primary drain_primary_node operator_down freeze_primary partition_primary partition_primary_from_peers metrics acl_users tls backup_restore backup_restore_volume adoption rollout scale single_instance upgrade broken_image}
 
 # shellcheck source=common.sh disable=SC1091
 source "$E2E_DIR/common.sh"
@@ -36,6 +36,8 @@ source "$E2E_DIR/upgrade.sh"
 source "$E2E_DIR/single.sh"
 # shellcheck source=metrics.sh disable=SC1091
 source "$E2E_DIR/metrics.sh"
+# shellcheck source=access.sh disable=SC1091
+source "$E2E_DIR/access.sh"
 
 for scenario in $SCENARIOS; do
   declare -F "scenario_$scenario" >/dev/null || die "there is no scenario named $scenario"

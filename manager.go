@@ -79,6 +79,11 @@ type managerConfig struct {
 	// volume a new Redis restores from are mounted.
 	backupDir  string
 	restoreDir string
+	// tlsSecret holds the server's certificate, or is empty without TLS.
+	// The manager writes its files to tlsDir and serves TLS on tlsPort.
+	tlsSecret string
+	tlsDir    string
+	tlsPort   int
 
 	leaseDuration   time.Duration
 	renewDeadline   time.Duration
@@ -143,11 +148,10 @@ type manager struct {
 	askedHandover bool
 	lastLine      string
 	// labeledPrimary is whether the last read of this pod found the
-	// primary role label. leaving and demoted are the step-downs whose
-	// clients the manager still has to disconnect (manager_demote.go).
+	// primary role label, and is true when the read failed. leaving is a
+	// step-down that waits for routing to move (manager_demote.go).
 	labeledPrimary bool
 	leaving        *leaving
-	demoted        *demotion
 
 	// backupBusy is true while a snapshot runs in the background.
 	backupBusy atomic.Bool
@@ -160,6 +164,12 @@ type manager struct {
 	// enableAOF is true when the server started from a restored snapshot
 	// with its append-only file off, and must turn it on once it runs.
 	enableAOF bool
+
+	// The users and the TLS of the server (manager_users.go,
+	// manager_tls.go), and the faults note last wrote, by topic.
+	userState
+	tlsState
+	notes map[string]string
 
 	mutex  sync.Mutex
 	report instanceReport
@@ -194,6 +204,9 @@ func (m *manager) run(stop context.Context) error {
 	}
 	settings, err := m.settings(redis)
 	if err != nil {
+		return err
+	}
+	if settings.tls, err = m.startTLS(stop, redis); err != nil {
 		return err
 	}
 	m.persist = settings.persistent
@@ -354,6 +367,9 @@ func (m *manager) step(ctx context.Context) {
 			m.enableAOF = false
 		}
 	}
+	if apiErr == nil {
+		m.keepAccess(ctx)
+	}
 	// A server that has no data yet, such as a replica before its first
 	// sync, would upload an empty snapshot as a completed backup.
 	if apiErr == nil && m.hasData {
@@ -374,14 +390,14 @@ func (m *manager) step(ctx context.Context) {
 	// left behind.
 	if after, err := m.server.replication(ctx); err == nil {
 		info = after
-		if err := m.disconnectDemotedClients(ctx, now, apiErr, info); err != nil {
-			m.say(fmt.Sprintf("%s: disconnecting the clients of the demoted primary: %s", m.config.podName, errorText(err)))
-		}
 	}
 	m.setReport(m.reportFrom(info, actErr))
 }
 
 func (m *manager) readDecision(ctx context.Context, now time.Time) error {
+	// Until a read of this pod says otherwise, it may still carry the
+	// primary label.
+	m.labeledPrimary = true
 	var redis Redis
 	if err := m.client.get(ctx, redisResource, m.config.namespace, m.config.redisName, &redis); err != nil {
 		return err
@@ -405,7 +421,6 @@ func (m *manager) readDecision(ctx context.Context, now time.Time) error {
 		return err
 	}
 	ips := map[string]string{}
-	m.labeledPrimary = false
 	for _, pod := range pods.Items {
 		if pod.Status.PodIP != "" {
 			ips[pod.Metadata.Name] = pod.Status.PodIP
@@ -415,6 +430,7 @@ func (m *manager) readDecision(ctx context.Context, now time.Time) error {
 		}
 	}
 	m.podIPs = ips
+	m.readAccessDecision(redis, pods.Items)
 	return nil
 }
 
@@ -502,8 +518,12 @@ func (m *manager) handOver(ctx context.Context, now time.Time, info replicationI
 		return fmt.Errorf("cannot hand the primary role to %s: its pod has no IP", m.target)
 	}
 	handed, err := m.stepDown(ctx, now, info, func() error {
+		port, err := m.peerPort(ctx, m.target)
+		if err != nil {
+			return err
+		}
 		m.say(fmt.Sprintf("%s: handing the primary role to %s", m.config.podName, m.target))
-		return m.server.failoverTo(ctx, ip, m.config.port, m.config.failoverTimeout)
+		return m.server.failoverTo(ctx, ip, port, m.config.failoverTimeout)
 	})
 	if err != nil {
 		return fmt.Errorf("handing the primary role to %s: %w", m.target, err)
@@ -528,7 +548,7 @@ func (m *manager) askForHandover(ctx context.Context) error {
 func (m *manager) isolationCheck(ctx context.Context, info replicationInfo) error {
 	if m.peersAgree(ctx) {
 		m.line(m.config.podName + ": cannot renew the primary lease, but every peer agrees this instance is primary; serving")
-		return nil
+		return m.resumeWrites(ctx)
 	}
 	m.line(m.config.podName + ": cannot renew the primary lease and a peer disagrees or is unreachable; fencing")
 	return m.demote(ctx, info, func() error { return m.server.detach(ctx, info, m.config.port) })
@@ -569,6 +589,9 @@ func (m *manager) stepAsOther(ctx context.Context, now time.Time, info replicati
 		m.lastRenew = now
 		m.hasData = true
 		m.say(m.config.podName + ": took the primary lease")
+		if err := m.resumeWrites(ctx); err != nil {
+			return err
+		}
 		if m.replicaMode {
 			return m.followSource(ctx, info)
 		}
@@ -588,7 +611,24 @@ func (m *manager) stepAsOther(ctx context.Context, now time.Time, info replicati
 			return err
 		}
 		m.line(m.config.podName + ": following " + holder)
-		return m.demote(ctx, info, func() error { return m.server.follow(ctx, info, m.podIPs[holder], m.config.port) })
+		return m.demote(ctx, info, func() error {
+			port, err := m.peerPort(ctx, holder)
+			if err != nil {
+				return err
+			}
+			return m.server.follow(ctx, info, m.podIPs[holder], port)
+		})
+	case holder == "" && m.switchingOver && info.role == "slave" && m.podIPs[m.target] != "" && info.masterHost == m.podIPs[m.target]:
+		// FAILOVER made this server a replica of the target, which takes
+		// the empty Lease on its next step. The target counts this link
+		// toward min-replicas-to-write, so detaching would make the new
+		// primary refuse writes with NOREPLICAS until this instance
+		// followed it again. Keeping the link loses nothing a detach
+		// would protect: what the target takes streams to this instance,
+		// which is the one the operator names again if the switchover
+		// fails.
+		m.line(m.config.podName + ": following " + m.target + ", which the switchover made primary")
+		return nil
 	default:
 		m.line(m.config.podName + ": detached, no primary holds the lease")
 		return m.demote(ctx, info, func() error { return m.server.detach(ctx, info, m.config.port) })
@@ -691,6 +731,22 @@ func (m *manager) say(line string) {
 func (m *manager) line(text string) {
 	if text != m.lastLine {
 		m.lastLine = text
+		m.say(text)
+	}
+}
+
+// note writes text for topic when it differs from what note last wrote
+// for it, so a fault that repeats on every step logs once. An empty
+// text clears the topic.
+func (m *manager) note(topic, text string) {
+	if m.notes == nil {
+		m.notes = map[string]string{}
+	}
+	if m.notes[topic] == text {
+		return
+	}
+	m.notes[topic] = text
+	if text != "" {
 		m.say(text)
 	}
 }

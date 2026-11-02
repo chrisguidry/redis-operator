@@ -20,6 +20,12 @@ func exporter(r *Redis) map[string]any {
 		fmt.Sprintf("-redis.addr=redis://127.0.0.1:%d", serverPort),
 		fmt.Sprintf("-web.listen-address=:%d", exporterPort),
 	}
+	if r.Spec.tlsEnabled() {
+		// The connection never leaves the pod, so checking the server's
+		// certificate would add only a way for the exporter to fail.
+		args[0] = fmt.Sprintf("-redis.addr=rediss://127.0.0.1:%d", tlsPort)
+		args = append(args, "-skip-tls-verification")
+	}
 	if r.Spec.Metrics != nil && len(r.Spec.Metrics.CheckSingleKeys) > 0 {
 		args = append(args, "-check-single-keys="+strings.Join(r.Spec.Metrics.CheckSingleKeys, ","))
 	}

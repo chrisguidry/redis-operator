@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"testing"
 	"time"
 )
@@ -127,6 +128,10 @@ func TestAPrimaryThatStepsDownForAFailoverDisconnectsItsClientsOnceThePodLosesTh
 	}
 }
 
+// A fenced primary that cannot read its pod cannot tell when routing
+// moves, so it holds writes for the demotion hold before it closes its
+// clients. A write meanwhile is refused for want of replicas, never
+// with READONLY.
 func TestAFencedPrimaryThatCannotReadItsLabelDisconnectsItsClients(t *testing.T) {
 	for _, engine := range engines {
 		t.Run(engine, func(t *testing.T) {
@@ -138,7 +143,77 @@ func TestAFencedPrimaryThatCannotReadItsLabelDisconnectsItsClients(t *testing.T)
 			h.outage()
 			h.waitFor("cache-0 detaches", func() bool { return h.report("cache-0").Role == reportDetached })
 
-			mustBeDisconnected(t, h.outcome(incrLater(conn)))
+			_, err := conn.do(context.Background(), "PING")
+			mustBeDisconnected(t, err)
+		})
+	}
+}
+
+// reconnectingWriter writes to the server of name in a loop and
+// connects again whenever its connection closes, as a client does
+// through a Service that still routes to that pod, until stop. It
+// delivers every error the server answered.
+func (h *managerHarness) reconnectingWriter(name string, stop <-chan struct{}) <-chan []string {
+	answered := make(chan []string, 1)
+	address := fmt.Sprintf("%s:%d", h.ip(name), h.port)
+	go func() {
+		var replies []string
+		var conn *redisConn
+		for {
+			select {
+			case <-stop:
+				if conn != nil {
+					_ = conn.Close()
+				}
+				answered <- replies
+				return
+			case <-time.After(20 * time.Millisecond):
+			}
+			if conn == nil {
+				dialed, err := dialRedis(context.Background(), address, testPassword)
+				if err != nil {
+					continue
+				}
+				conn = dialed
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_, err := conn.do(ctx, "INCR", "counter")
+			cancel()
+			if reply, ok := errors.AsType[replyError](err); ok {
+				replies = append(replies, reply.code())
+			} else if err != nil {
+				_ = conn.Close()
+				conn = nil
+			}
+		}
+	}()
+	return answered
+}
+
+// A failover can move the Lease while the primary is cut off or frozen.
+// When it comes back, it finds another holder, and its clients still
+// reach it until routing moves. It holds their writes as a primary until
+// then, and none is answered READONLY.
+func TestAPrimaryThatFindsAnotherHolderAnswersNoWriteWithReadonly(t *testing.T) {
+	for _, engine := range engines {
+		t.Run(engine, func(t *testing.T) {
+			h := twoInstances(t, engine)
+			h.labelRole("cache-0", rolePrimary)
+			stop := make(chan struct{})
+			answered := h.reconnectingWriter("cache-0", stop)
+
+			h.setTarget("cache-1")
+			h.api.update(leasesResource, testNamespace, primaryLeaseName(h.name), func(object map[string]any) {
+				object["spec"].(map[string]any)["holderIdentity"] = "cache-1"
+			})
+			h.waitFor("cache-1 is a ready primary", func() bool { return h.report("cache-1").Ready })
+			time.Sleep(time.Second)
+			close(stop)
+			replies := <-answered
+			h.labelRole("cache-0", roleReplica)
+
+			h.waitFor("cache-0 is no longer primary", func() bool { return h.report("cache-0").Role != reportPrimary })
+			mustMatch(t, slices.Contains(replies, "READONLY"), false)
 		})
 	}
 }

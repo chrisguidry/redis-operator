@@ -60,6 +60,8 @@ type RedisSpec struct {
 	Bootstrap          *Bootstrap        `json:"bootstrap,omitempty"`
 	Replica            *ReplicaSpec      `json:"replica,omitempty"`
 	Metrics            *MetricsSpec      `json:"metrics,omitempty"`
+	Users              []RedisUser       `json:"users,omitempty"`
+	TLS                *TLSSpec          `json:"tls,omitempty"`
 }
 
 type StorageSpec struct {

@@ -27,6 +27,10 @@ type child struct {
 	name     string
 	body     map[string]any
 	remove   bool
+	// optional is a child whose failed write the operator logs and
+	// passes over, so the rest of the pass still runs: a Certificate,
+	// whose API exists only where cert-manager is installed.
+	optional bool
 }
 
 func ownerOf(r *Redis) OwnerReference {
@@ -67,7 +71,8 @@ func children(r *Redis, operatorImage string, secrets []string, restore *BackupV
 		{"apiGroups": []string{apiGroup}, "resources": []string{"backups/status"}, "verbs": []string{"patch"}},
 	}
 	if len(secrets) > 0 {
-		// The object store's credentials, and no other Secret.
+		// The Secrets the managers read, and no other: the users'
+		// passwords, the certificate, and the object store's credentials.
 		rules = append(rules, map[string]any{"apiGroups": []string{""}, "resources": []string{"secrets"}, "resourceNames": secrets, "verbs": []string{"get"}})
 	}
 	list := []child{
@@ -113,14 +118,21 @@ func children(r *Redis, operatorImage string, secrets []string, restore *BackupV
 				"selector":     map[string]any{"matchLabels": map[string]string{clusterLabel: name, roleLabel: rolePrimary}},
 			},
 		}, remove: r.Spec.instances() <= 1},
+		// Last, so a failed apply where cert-manager is missing leaves
+		// every other child applied.
+		certificate(r),
 	}
 	return list
 }
 
 func service(r *Redis, name string, selector map[string]string, headless bool) child {
+	ports := []map[string]any{{"name": "redis", "port": serverPort, "targetPort": "redis"}}
+	if r.Spec.tlsEnabled() {
+		ports = append(ports, map[string]any{"name": "redis-tls", "port": tlsPort, "targetPort": "redis-tls"})
+	}
 	spec := map[string]any{
 		"selector": selector,
-		"ports":    []map[string]any{{"name": "redis", "port": serverPort, "targetPort": "redis"}},
+		"ports":    ports,
 	}
 	if headless {
 		spec["clusterIP"] = "None"
@@ -141,6 +153,15 @@ func statefulSet(r *Redis, operatorImage string, restore *BackupVolume, replicas
 		{"name": "REDIS_NAME", "value": name},
 		{"name": "REDIS_PASSWORD", "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": secretName(name), "key": "password"}}},
 	}
+	ports := []map[string]any{{"name": "redis", "containerPort": serverPort}, {"name": "status", "containerPort": statusPort}}
+	templateMeta := map[string]any{"labels": podLabels}
+	if secret := r.Spec.tlsSecret(name); secret != "" {
+		env = append(env, map[string]any{"name": "TLS_SECRET", "value": secret})
+		ports = append(ports, map[string]any{"name": "redis-tls", "containerPort": tlsPort})
+		// Each manager reads which of its peers serve TLS from this, to
+		// choose how to replicate from them (manager_tls.go).
+		templateMeta["annotations"] = map[string]string{tlsAnnotation: "true"}
+	}
 	resources := map[string]any{
 		"requests": map[string]any{"memory": r.Spec.memory()},
 		"limits":   map[string]any{"memory": r.Spec.memory()},
@@ -160,7 +181,7 @@ func statefulSet(r *Redis, operatorImage string, restore *BackupVolume, replicas
 		"image":          servingImage(r),
 		"command":        []string{"/manager/redis-operator", "manager"},
 		"env":            env,
-		"ports":          []map[string]any{{"name": "redis", "containerPort": serverPort}, {"name": "status", "containerPort": statusPort}},
+		"ports":          ports,
 		"resources":      resources,
 		"readinessProbe": probe("/ready", 2, 1),
 		"livenessProbe":  probe("/healthz", 10, 3),
@@ -210,7 +231,7 @@ func statefulSet(r *Redis, operatorImage string, restore *BackupVolume, replicas
 		"podManagementPolicy": "Parallel",
 		"selector":            map[string]any{"matchLabels": podLabels},
 		"template": map[string]any{
-			"metadata": map[string]any{"labels": podLabels},
+			"metadata": templateMeta,
 			"spec":     podSpec,
 		},
 	}
@@ -265,19 +286,46 @@ func mounts(r *Redis, restore *BackupVolume) []map[string]any {
 // secret is the connection Secret: the password, which the operator
 // makes once, and the addresses a client needs.
 func secret(r *Redis, password string) map[string]any {
+	data := map[string][]byte{}
+	for key, value := range secretData(r, password) {
+		data[key] = []byte(value)
+	}
+	return map[string]any{
+		"apiVersion": "v1", "kind": "Secret", "metadata": childMeta(r, secretName(r.Metadata.Name), nil),
+		"type": "Opaque",
+		"data": data,
+	}
+}
+
+// secretKeys lists every key secretData can write, so a key that a
+// change to the spec drops can be removed.
+var secretKeys = []string{"password", "host", "port", "uri", "ro-uri", "tls-port", "tls-uri", "tls-ro-uri"}
+
+// secretData is what the connection Secret holds. With TLS it also
+// names the TLS port, and once the plaintext port closes, port, uri,
+// and ro-uri name TLS too, since nothing answers plaintext.
+func secretData(r *Redis, password string) map[string]string {
 	name := r.Metadata.Name
 	host := fmt.Sprintf("%s-rw.%s.svc", name, r.Metadata.Namespace)
 	readHost := fmt.Sprintf("%s-ro.%s.svc", name, r.Metadata.Namespace)
-	port := strconv.Itoa(serverPort)
-	return map[string]any{
-		"apiVersion": "v1", "kind": "Secret", "metadata": childMeta(r, secretName(name), nil),
-		"type": "Opaque",
-		"stringData": map[string]string{
-			"password": password,
-			"host":     host,
-			"port":     port,
-			"uri":      fmt.Sprintf("redis://:%s@%s:%s", password, host, port),
-			"ro-uri":   fmt.Sprintf("redis://:%s@%s:%s", password, readHost, port),
-		},
+	uri := func(scheme, host string, port int) string {
+		return fmt.Sprintf("%s://:%s@%s:%d", scheme, password, host, port)
 	}
+	data := map[string]string{
+		"password": password,
+		"host":     host,
+		"port":     strconv.Itoa(serverPort),
+		"uri":      uri("redis", host, serverPort),
+		"ro-uri":   uri("redis", readHost, serverPort),
+	}
+	if !r.Spec.tlsEnabled() {
+		return data
+	}
+	data["tls-port"] = strconv.Itoa(tlsPort)
+	data["tls-uri"] = uri("rediss", host, tlsPort)
+	data["tls-ro-uri"] = uri("rediss", readHost, tlsPort)
+	if r.Spec.tlsOnly() {
+		data["port"], data["uri"], data["ro-uri"] = data["tls-port"], data["tls-uri"], data["tls-ro-uri"]
+	}
+	return data
 }

@@ -140,8 +140,10 @@ type redisState struct {
 	promotionRetryAfter time.Time
 	// applied holds the body of each child as last applied, so a steady
 	// pass writes nothing.
-	applied   map[string]string
-	hasSecret bool
+	applied map[string]string
+	// secretData is the connection Secret's data as the operator last
+	// made it agree with the spec, less the password.
+	secretData string
 }
 
 func newController(client *kubeClient, readings *metrics, operatorImage string, now func() time.Time, log io.Writer) *controller {
@@ -314,49 +316,107 @@ func (c *controller) state(r *Redis) *redisState {
 }
 
 // ensureChildren applies each child whose body changed since the
-// operator last applied it, and creates the Secret once.
+// operator last applied it, and keeps the Secret.
 func (c *controller) ensureChildren(ctx context.Context, r *Redis, st *redisState, w *world) error {
-	if !st.hasSecret {
-		var existing map[string]any
-		err := c.client.get(ctx, secretsResource, r.Metadata.Namespace, secretName(r.Metadata.Name), &existing)
-		switch {
-		case err == nil:
-		case errors.Is(err, errNotFound):
-			if err := c.client.create(ctx, secretsResource, r.Metadata.Namespace, secret(r, newPassword()), nil); err != nil && !errors.Is(err, errConflict) {
-				return fmt.Errorf("creating secret %s: %w", secretName(r.Metadata.Name), err)
-			}
-			c.log.printf("redis %s: created secret %s", objectKey(r.Metadata), secretName(r.Metadata.Name))
-		default:
-			return fmt.Errorf("reading secret %s: %w", secretName(r.Metadata.Name), err)
-		}
-		st.hasSecret = true
+	if err := c.ensureSecret(ctx, r, st); err != nil {
+		return err
 	}
 	holder := w.leases[r.Metadata.Namespace+"/"+primaryLeaseName(r.Metadata.Name)].Spec.HolderIdentity
-	for _, each := range children(r, c.operatorImage, storeSecrets(r, w), restoreVolume(r, w), replicasFor(r, holder)) {
-		key := each.resource.String() + "/" + each.name
-		if each.remove {
-			if st.applied[key] == removedChild {
-				continue
+	for _, each := range children(r, c.operatorImage, managerSecrets(r, w), restoreVolume(r, w), replicasFor(r, holder)) {
+		err := c.ensureChild(ctx, r, st, each)
+		if !each.optional {
+			if err != nil {
+				return err
 			}
-			err := c.client.delete(ctx, each.resource, r.Metadata.Namespace, each.name, "", "")
-			if err != nil && !errors.Is(err, errNotFound) {
-				return fmt.Errorf("deleting %s %s: %w", each.resource, each.name, err)
-			}
-			st.applied[key] = removedChild
 			continue
 		}
-		body, err := json.Marshal(each.body)
+		subject := "redis " + objectKey(r.Metadata)
 		if err != nil {
-			return err
-		}
-		if st.applied[key] == string(body) {
+			c.log.fault(subject, topicOptional, fmt.Sprintf("%s; is cert-manager installed?", errorText(err)))
 			continue
 		}
-		if err := c.client.apply(ctx, each.resource, r.Metadata.Namespace, each.name, each.body, nil); err != nil {
-			return fmt.Errorf("applying %s %s: %w", each.resource, each.name, err)
-		}
-		st.applied[key] = string(body)
+		c.log.clear(subject, topicOptional)
 	}
+	return nil
+}
+
+func (c *controller) ensureChild(ctx context.Context, r *Redis, st *redisState, each child) error {
+	key := each.resource.String() + "/" + each.name
+	if each.remove {
+		if st.applied[key] == removedChild {
+			return nil
+		}
+		err := c.client.delete(ctx, each.resource, r.Metadata.Namespace, each.name, "", "")
+		if err != nil && !errors.Is(err, errNotFound) {
+			return fmt.Errorf("deleting %s %s: %w", each.resource, each.name, err)
+		}
+		st.applied[key] = removedChild
+		return nil
+	}
+	body, err := json.Marshal(each.body)
+	if err != nil {
+		return err
+	}
+	if st.applied[key] == string(body) {
+		return nil
+	}
+	if err := c.client.apply(ctx, each.resource, r.Metadata.Namespace, each.name, each.body, nil); err != nil {
+		return fmt.Errorf("applying %s %s: %w", each.resource, each.name, err)
+	}
+	st.applied[key] = string(body)
+	return nil
+}
+
+// ensureSecret creates the connection Secret once, with a new password,
+// and rewrites its other keys when a change to the spec changes them,
+// such as turning TLS on. It reads the Secret only when what those keys
+// should say differs from what it last made them say.
+func (c *controller) ensureSecret(ctx context.Context, r *Redis, st *redisState) error {
+	name := secretName(r.Metadata.Name)
+	shape, err := json.Marshal(secretData(r, ""))
+	if err != nil {
+		return err
+	}
+	if st.secretData == string(shape) {
+		return nil
+	}
+	var existing struct {
+		Data map[string][]byte `json:"data"`
+	}
+	err = c.client.get(ctx, secretsResource, r.Metadata.Namespace, name, &existing)
+	switch {
+	case errors.Is(err, errNotFound):
+		if err := c.client.create(ctx, secretsResource, r.Metadata.Namespace, secret(r, newPassword()), nil); err != nil && !errors.Is(err, errConflict) {
+			return fmt.Errorf("creating secret %s: %w", name, err)
+		}
+		c.log.printf("redis %s: created secret %s", objectKey(r.Metadata), name)
+	case err != nil:
+		return fmt.Errorf("reading secret %s: %w", name, err)
+	default:
+		password := string(existing.Data["password"])
+		if password == "" {
+			return fmt.Errorf("secret %s has no password; delete it, and the operator makes a new one", name)
+		}
+		want := secretData(r, password)
+		changes := map[string]any{}
+		for _, key := range secretKeys {
+			value, wanted := want[key]
+			current, present := existing.Data[key]
+			switch {
+			case wanted && string(current) != value:
+				changes[key] = []byte(value)
+			case !wanted && present:
+				changes[key] = nil
+			}
+		}
+		if len(changes) > 0 {
+			if err := c.client.mergePatch(ctx, secretsResource, r.Metadata.Namespace, name, map[string]any{"data": changes}, nil); err != nil {
+				return fmt.Errorf("updating secret %s: %w", name, err)
+			}
+			c.log.printf("redis %s: updated the addresses in secret %s", objectKey(r.Metadata), name)
+		}
+	}
+	st.secretData = string(shape)
 	return nil
 }
 
@@ -423,12 +483,18 @@ func (st *redisState) fresh(name string, now time.Time, within time.Duration) (i
 	return report, ok
 }
 
-// storeSecrets names the Secrets that hold the credentials of r's
-// object stores: its own, and the store of the Backup it restores
-// from, which its instance managers may read.
-func storeSecrets(r *Redis, w *world) []string {
+// managerSecrets names the Secrets r's instance managers may read: the
+// users' passwords, the servers' certificate, and the credentials of
+// r's object stores, its own and the store of the Backup it restores
+// from.
+func managerSecrets(r *Redis, w *world) []string {
 	var names []string
-	if r.Spec.Backup != nil && r.Spec.Backup.Volume == nil && r.Spec.Backup.Credentials.Secret != "" {
+	for _, name := range r.Spec.credentialSecrets(r.Metadata.Name) {
+		if !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+	}
+	if r.Spec.Backup != nil && r.Spec.Backup.Volume == nil && r.Spec.Backup.Credentials.Secret != "" && !slices.Contains(names, r.Spec.Backup.Credentials.Secret) {
 		names = append(names, r.Spec.Backup.Credentials.Secret)
 	}
 	if replica := r.Spec.Replica; replica != nil {

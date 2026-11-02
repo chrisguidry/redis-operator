@@ -125,7 +125,7 @@ func (m *manager) snapshotAndUpload(ctx context.Context, backup Backup) (int64, 
 	if err != nil {
 		return 0, 0, err
 	}
-	conn := &server{addr: m.server.addr, password: m.server.password}
+	conn := m.server.another()
 	defer conn.close()
 	info, err := conn.replication(ctx)
 	if err != nil {

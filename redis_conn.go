@@ -12,6 +12,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -42,7 +43,19 @@ type redisConn struct {
 // The context bounds the connect and the AUTH, and each later command
 // takes its own context.
 func dialRedis(ctx context.Context, addr, password string) (*redisConn, error) {
-	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	return dialRedisTLS(ctx, addr, password, nil)
+}
+
+// dialRedisTLS connects as dialRedis does, over TLS when config is not
+// nil.
+func dialRedisTLS(ctx context.Context, addr, password string, config *tls.Config) (*redisConn, error) {
+	var conn net.Conn
+	var err error
+	if config != nil {
+		conn, err = (&tls.Dialer{Config: config}).DialContext(ctx, "tcp", addr)
+	} else {
+		conn, err = (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	}
 	if err != nil {
 		return nil, err
 	}

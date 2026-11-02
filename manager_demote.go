@@ -25,11 +25,12 @@ package main
 // primary or no endpoint yet.
 //
 // An unplanned demotion, a fence or a primary that finds another
-// instance holding the Lease, does not wait for routing (demote). The manager pauses
-// writes across the role change and closes the clients in the
-// transaction that ends the pause, then closes them again once it reads
-// its pod without the label and once more after routeSettle. A manager
-// that cannot read its pod closes them a last time after demotionHold.
+// instance holding the Lease, takes the same steps (demote). Its server
+// stays a paused primary until routing moves, which is as safe as a
+// replica: it takes no write while paused, and a write that its lost
+// replicas cannot confirm gets NOREPLICAS, never READONLY. A manager
+// that cannot read its pod cannot tell when routing moves, so it waits
+// demotionHold before it closes the clients and changes the role.
 //
 // The replication links are other client types and stay, and a pause
 // of writes does not stop a primary from sending its replicas what it
@@ -55,7 +56,14 @@ type leaving struct {
 // and the caller tries again on the next step until it is.
 func (m *manager) stepDown(ctx context.Context, now time.Time, info replicationInfo, change func() error) (bool, error) {
 	if info.role != "master" {
-		m.leaving = nil
+		if m.leaving != nil {
+			// The role changed on an earlier step, and the transaction
+			// that ends the pause failed there.
+			if err := m.server.killClients(ctx, true); err != nil {
+				return false, err
+			}
+			m.leaving = nil
+		}
 		return true, change()
 	}
 	l := m.leaving
@@ -78,22 +86,23 @@ func (m *manager) stepDown(ctx context.Context, now time.Time, info replicationI
 		return false, err
 	}
 	err := change()
-	m.leaving = nil
 	if after, readErr := m.server.replication(ctx); readErr == nil && after.role == "master" {
 		// The server kept the primary role, as it does when a FAILOVER
 		// aborts, so its clients may write again.
+		m.leaving = nil
 		if unpauseErr := m.server.unpause(ctx); err == nil {
 			err = unpauseErr
 		}
 		return false, err
 	}
 	if killErr := m.server.killClients(ctx, true); killErr != nil {
-		// The pause outlives this step, so the unplanned path ends it.
-		m.demoted = &demotion{started: now}
+		// leaving stays, so the next step ends the pause.
 		if err == nil {
 			err = killErr
 		}
+		return false, err
 	}
+	m.leaving = nil
 	return err == nil, err
 }
 
@@ -112,60 +121,12 @@ func (m *manager) pauseLimit() time.Duration {
 	return 2*m.config.demotionHold + m.config.failoverTimeout
 }
 
-// demotion is a server that stopped being primary without waiting for
-// routing, and whose clients may still reconnect to it.
-type demotion struct {
-	started  time.Time
-	routedAt time.Time
-}
-
-// demote makes a primary a replica with change at once, with its writes
-// paused across the change.
+// demote makes a primary a replica with change once routing has moved
+// off its pod, as stepDown does, for a demotion that nothing plans: a
+// fence, or a primary that finds another instance holding the Lease. A
+// replica answers every write with READONLY, so the server stays a
+// paused primary until no client can reach it through the Service.
 func (m *manager) demote(ctx context.Context, info replicationInfo, change func() error) error {
-	if info.role != "master" {
-		return change()
-	}
-	m.leaving = nil
-	if err := m.server.pauseWrites(ctx, m.pauseLimit()); err != nil {
-		return err
-	}
-	err := change()
-	if after, readErr := m.server.replication(ctx); readErr == nil && after.role == "master" {
-		if unpauseErr := m.server.unpause(ctx); err == nil {
-			err = unpauseErr
-		}
-		return err
-	}
-	m.demoted = &demotion{started: time.Now()}
-	if killErr := m.server.killClients(ctx, true); err == nil {
-		err = killErr
-	}
+	_, err := m.stepDown(ctx, time.Now(), info, change)
 	return err
-}
-
-// disconnectDemotedClients closes the clients of a server that demote
-// changed, once its pod has lost the primary label and again after
-// routeSettle. info is the server's role after this step acted.
-func (m *manager) disconnectDemotedClients(ctx context.Context, now time.Time, apiErr error, info replicationInfo) error {
-	d := m.demoted
-	if d == nil {
-		return nil
-	}
-	if info.role == "master" {
-		// The server is primary again, and its clients are the primary's.
-		m.demoted = nil
-		return m.server.unpause(ctx)
-	}
-	routed := apiErr == nil && !m.labeledPrimary
-	if routed && d.routedAt.IsZero() {
-		d.routedAt = now
-		return m.server.killClients(ctx, true)
-	}
-	if (routed && now.Sub(d.routedAt) >= m.config.routeSettle) || now.Sub(d.started) >= m.config.demotionHold {
-		if err := m.server.killClients(ctx, true); err != nil {
-			return err
-		}
-		m.demoted = nil
-	}
-	return nil
 }

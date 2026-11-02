@@ -89,6 +89,11 @@ func (c *controller) reconcile(ctx context.Context, r *Redis, w *world) error {
 	}
 	if landed {
 		c.postDecisions(r, &d)
+		if d.clearForce {
+			if err := c.clearForce(ctx, r); err != nil {
+				return err
+			}
+		}
 	}
 	return c.labelRoles(ctx, pods, holder, status.TargetPrimary)
 }
@@ -107,6 +112,10 @@ type decision struct {
 	// notes are the Events of this pass's decisions, which the pass
 	// posts once the status lands.
 	notes []eventNote
+	// quorumShort says why a pending failover waits for its quorum, and
+	// clearForce whether the pass removes the annotation that forced it.
+	quorumShort string
+	clearForce  bool
 }
 
 func (d *decision) subject() string { return "redis " + objectKey(d.r.Metadata) }
@@ -150,13 +159,15 @@ func (d *decision) failover() {
 
 // choosePrimary names the reachable instance with data and the highest
 // offset, once every reachable instance has detached or the wait for
-// that is over.
+// that is over, and once enough instances detached with their data to
+// hold every confirmed write (reconcile_quorum.go).
 func (d *decision) choosePrimary() {
 	if d.st.pendingSince.IsZero() {
 		d.st.pendingSince = d.now
 	}
 	within := 2 * d.c.timings.backstop
 	allDetached, allAnswered, anyData := true, true, false
+	counted := 0
 	best, bestOffset := "", int64(-1)
 	for i := range d.r.Spec.instances() {
 		name := instanceName(d.r.Metadata.Name, i)
@@ -168,6 +179,9 @@ func (d *decision) choosePrimary() {
 		anyData = anyData || report.HasData
 		if report.Role != reportDetached {
 			allDetached = false
+		}
+		if countsTowardQuorum(report) {
+			counted++
 		}
 		if !report.HasData || report.Stopping {
 			continue
@@ -198,9 +212,10 @@ func (d *decision) choosePrimary() {
 		d.setCondition("DataLost", ConditionTrue, "AllInstancesEmpty", "every instance restarted with no data, so the dataset started empty")
 		return
 	}
-	if best == "" {
+	if d.lacksQuorum(counted) || best == "" {
 		return
 	}
+	d.noteForced(best, counted)
 	d.c.log.printf("%s: %s is the next primary, at offset %d", d.subject(), best, bestOffset)
 	d.note(eventNormal, "PrimaryChosen", fmt.Sprintf("%s is the next primary, at offset %d", best, bestOffset))
 	d.status.TargetPrimary = best
@@ -429,6 +444,8 @@ func (d *decision) summarize(pods []Pod) {
 	d.status.ObservedGeneration = d.r.Metadata.Generation
 	want := d.r.Spec.instances()
 	switch {
+	case d.status.TargetPrimary == targetPending && d.quorumShort != "":
+		d.setCondition(readyCondition, ConditionFalse, "QuorumNotReached", d.quorumShort)
 	case d.status.TargetPrimary == targetPending:
 		d.setCondition(readyCondition, ConditionFalse, "FailoverInProgress", "the primary failed, and the operator is choosing the next one")
 	case d.holder == "":

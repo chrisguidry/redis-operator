@@ -233,6 +233,66 @@ spec:
                       items:
                         type: string
                         pattern: '^[^,]+$'
+                users:
+                  type: array
+                  description: ACL users beside the default user, which every instance manager sets on its own server. The default user and its password in <name>-app stay as they are.
+                  maxItems: 64
+                  x-kubernetes-list-type: map
+                  x-kubernetes-list-map-keys: [name]
+                  items:
+                    type: object
+                    required: [name, password, rules]
+                    properties:
+                      name:
+                        type: string
+                        maxLength: 64
+                        pattern: '^[A-Za-z0-9][A-Za-z0-9._-]*$'
+                        x-kubernetes-validations:
+                          - rule: self != 'default'
+                            message: the default user is the one in <name>-app, which spec.users cannot change
+                      password:
+                        type: object
+                        description: The Secret in this namespace, and its key, that holds the user's password. Changing it changes the password without a restart.
+                        required: [secret, key]
+                        properties:
+                          secret: {type: string}
+                          key: {type: string}
+                      rules:
+                        type: string
+                        minLength: 1
+                        maxLength: 4096
+                        description: ACL rules as ACL SETUSER takes them, separated by spaces, such as "~app:* &app:* +@all -@dangerous".
+                        x-kubernetes-validations:
+                          - rule: |-
+                              !self.matches(r'(^|\s)([<>#!]|(?i:on|off|reset|nopass|resetpass)(\s|$))')
+                            message: rules cannot set a password or turn the user on, off, or reset; the operator does that from the Secret
+                tls:
+                  type: object
+                  description: Serve TLS on port 6380, with a certificate from a cert-manager issuer or from a Secret.
+                  x-kubernetes-validations:
+                    - rule: has(self.issuerRef) != has(self.secret)
+                      message: tls names either a cert-manager issuerRef or a secret, not both
+                  properties:
+                    issuerRef:
+                      type: object
+                      description: The cert-manager issuer that signs the Certificate <name>-tls, which the operator makes. It must sign names inside the cluster, as a CA issuer does.
+                      required: [name]
+                      properties:
+                        name: {type: string}
+                        kind:
+                          type: string
+                          enum: [Issuer, ClusterIssuer]
+                          default: Issuer
+                        group:
+                          type: string
+                          default: cert-manager.io
+                    secret:
+                      type: string
+                      description: A Secret in this namespace with tls.crt, tls.key, and ca.crt.
+                    plaintext:
+                      type: boolean
+                      default: false
+                      description: Keep serving plaintext on port 6379 beside TLS. With false, each instance closes 6379 once every instance serves TLS.
             status:
               type: object
               properties:

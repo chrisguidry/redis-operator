@@ -7,9 +7,11 @@ kind: ClusterRole
 metadata:
   name: redis-operator
 rules:
+  # patch removes the annotation that forced a failover without its
+  # quorum, once the failover it forced named the next primary.
   - apiGroups: [redis.guid.foo]
     resources: [redis]
-    verbs: [get, list, watch]
+    verbs: [get, list, watch, patch]
   # A ScheduledBackup makes Backups, retention deletes them, and a
   # finalizer on each deletes its object from the store first.
   - apiGroups: [redis.guid.foo]
@@ -64,13 +66,20 @@ rules:
   - apiGroups: [rbac.authorization.k8s.io]
     resources: [roles, rolebindings]
     verbs: [create, patch]
-  # The connection Secret is created once, and read to learn whether it
-  # exists. An object store's credentials Secret is read to delete a
-  # Backup's object. The operator never lists Secrets, and it grants
-  # each Redis's instance managers its store's Secret by name.
+  # The connection Secret is created once with its password, and
+  # patched when a change to spec.tls changes its addresses. An object
+  # store's credentials Secret is read to delete a Backup's object. The
+  # operator never lists Secrets, and it grants each Redis's instance
+  # managers by name the Secrets they read: its store's, its users'
+  # passwords, and its certificate.
   - apiGroups: [""]
     resources: [secrets]
-    verbs: [get, create]
+    verbs: [get, create, patch]
+  # The Certificate of a Redis whose spec.tls names a cert-manager
+  # issuer. Where cert-manager is not installed, this grants nothing.
+  - apiGroups: [cert-manager.io]
+    resources: [certificates]
+    verbs: [create, patch, delete]
   # What the Role for the instance managers grants, which the operator
   # must hold to grant it.
   - apiGroups: [coordination.k8s.io]

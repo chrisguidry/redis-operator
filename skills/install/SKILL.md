@@ -1,6 +1,6 @@
 ---
 name: install
-description: "Install, upgrade, or remove redis-operator from its kustomize base pinned to a release, choose its namespace, admit it through NetworkPolicies, add the monitoring component of PodMonitors, alerts, and a Grafana dashboard, and check that it runs and serves metrics. Use when a cluster has no Redis CRD yet, when moving the operator to a new release, or when removing it."
+description: "Install, upgrade, or remove redis-operator from its kustomize base pinned to a release, choose its namespace, admit it through NetworkPolicies, add the monitoring component of PodMonitors, alerts, and a Grafana dashboard, check what TLS from cert-manager needs, and check that it runs and serves metrics. Use when a cluster has no Redis CRD yet, when moving the operator to a new release, or when removing it."
 ---
 
 Before the first command, run `kubectl config current-context` and confirm that it names the cluster the person means.
@@ -225,8 +225,9 @@ spec:
 
 The Redis pods also reach each other on 6379, for replication, and on
 9123, where a primary that cannot renew its Lease asks its peers which
-instance should be primary. A policy that admits the namespace's own
-pods covers both. Clients need 6379.
+instance should be primary. With `spec.tls` they replicate on 6380. A
+policy that admits the namespace's own pods covers them all. Clients
+need 6379, or 6380 with TLS.
 Prometheus needs 9121, the exporter's port named `metrics`, on every
 Redis pod.
 
@@ -234,6 +235,33 @@ The operator also connects out: to the Kubernetes API, to an S3
 endpoint when it deletes a backup's object, and to the source Redis or
 its sentinels while it adopts one. The Redis pods connect to the S3
 endpoint and to an adoption source. An egress policy must allow those.
+
+## cert-manager
+
+A `Redis` whose `spec.tls.issuerRef` names a cert-manager issuer gets a
+Certificate that the operator makes. cert-manager is not needed to
+install the operator, nor for a `Redis` without `issuerRef`, such as
+one whose `spec.tls.secret` names a Secret you keep. The base's
+ClusterRole has `create`, `patch`, and `delete` on
+`certificates.cert-manager.io`, which grants nothing where cert-manager
+is not installed. Install cert-manager, and an issuer that signs names
+inside the cluster such as a CA issuer, before a `Redis` names one.
+
+Where cert-manager is missing, the operator logs, once until it
+recovers:
+
+```text
+redis example/cache: applying certificates.cert-manager.io cache-tls: ...; is cert-manager installed?
+```
+
+The rest of the `Redis` keeps running and failing over, and its new
+pods wait for the Secret `cache-tls`.
+
+The ClusterRole also has `patch` on Secrets, to rewrite the addresses
+in a `Redis`'s connection Secret when `spec.tls` changes. The operator
+grants each `Redis`'s instance managers `get` on the Secrets they read,
+by name: its users' passwords, its certificate, and its backup store's
+credentials.
 
 ## Upgrade the operator
 

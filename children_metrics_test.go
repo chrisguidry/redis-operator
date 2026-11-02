@@ -14,6 +14,7 @@ type templateContainer struct {
 	Args  []string `json:"args"`
 	Env   []struct {
 		Name      string `json:"name"`
+		Value     string `json:"value"`
 		ValueFrom struct {
 			SecretKeyRef struct {
 				Name string `json:"name"`

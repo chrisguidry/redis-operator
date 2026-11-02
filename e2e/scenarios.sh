@@ -68,6 +68,56 @@ scenario_freeze_primary() {
   assert_no_confirmed_write_lost "freezing the primary"
 }
 
+# scenario_partition_primary_from_peers cuts the primary off from the
+# API server, its peers, and the operator, as scenario_partition_primary
+# does, but keeps the writer's path to it open, as a split that leaves
+# a machine with its clients does. The writer's connections through
+# cache-rw stop reaching it once the operator moves the role label, and
+# its probe by pod IP shows the old primary refusing writes once
+# min-replicas-to-write finds no replica, or once its instance manager
+# fences it. No replica acknowledges a write it took after the cut, so
+# the writer counts each one as unconfirmed, and the counter check
+# shows that none it confirmed was lost.
+scenario_partition_primary_from_peers() {
+  local old node ip writer_ip started
+  old=$(primary)
+  node=$(node_of "$old")
+  ip=$(kubectl -n "$NS" get pod "$old" -o jsonpath='{.status.podIP}')
+  writer_ip=$(kubectl -n "$NS" get pod writer -o jsonpath='{.status.podIP}')
+  log "scenario: partition the primary $old ($ip on $node) from everything but the writer ($writer_ip)"
+  partition "$node" "$ip" -I
+  admit "$node" "$ip" "$writer_ip" -I
+  started=$SECONDS
+  retry "the old primary refusing writes from the client that still reaches it" 25 old_primary_refuses "$ip"
+  log "the old primary refused writes $((SECONDS - started))s after the cut"
+  retry "a new primary" 90 primary_is_not "$old"
+  sleep 15
+  admit "$node" "$ip" "$writer_ip" -D
+  partition "$node" "$ip" -D
+  wait_ready 180
+  assert_no_confirmed_write_lost "partitioning the primary from its peers"
+}
+
+# admit adds (-I) or removes (-D) the rules that let the traffic between
+# the pod at $2 and the pod at $3 through the drops that partition
+# puts on the node. -I puts them above the drops.
+admit() {
+  docker exec "$1" sh -c "
+    PATH=\$PATH:/bin/aux
+    iptables $4 FORWARD -s $2 -d $3 -j ACCEPT
+    iptables $4 FORWARD -s $3 -d $2 -j ACCEPT"
+}
+
+# old_primary_refuses writes a probe key to the server at $1 by its pod
+# IP, from the writer, and passes when the server refuses it.
+old_primary_refuses() {
+  local cli=redis-cli reply
+  [ "$ENGINE" = valkey ] && cli=valkey-cli
+  reply=$(kubectl -n "$NS" exec writer -- sh -c "timeout 3 $cli -h $1 INCR partition-probe" 2>&1)
+  echo "$reply"
+  grep -Eq 'NOREPLICAS|READONLY' <<<"$reply"
+}
+
 # scenario_partition_primary cuts the primary off from the API server,
 # its peers, the operator, and its clients: the node it runs on drops
 # every packet the pod sends or receives through the pod network, the

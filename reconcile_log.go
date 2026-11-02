@@ -28,6 +28,8 @@ type lineLog struct {
 const (
 	topicReconcile = ""
 	topicStatus    = "status"
+	// topicOptional is an optional child's write (children.go).
+	topicOptional = "optional child"
 )
 
 func newLineLog(out io.Writer) *lineLog {

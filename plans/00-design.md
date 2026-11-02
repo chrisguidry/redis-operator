@@ -155,14 +155,20 @@ The design instead:
 
 - A planned switchover, for a drain or a spec change, loses no write.
 - After an unplanned failover, every write that the client confirmed
-  with `WAIT n` survives, provided the operator reached enough replicas
-  to see it. Writes that no replica acknowledged can be lost: Redis
+  with `WAIT n`, for `n` at least `minReplicasToWrite` and at least 1,
+  survives. The failover names the next primary only once it has
+  reached enough instances that one of them holds every such write,
+  unless a person forces it
+  ([01-high-availability.md](01-high-availability.md), "The failover
+  quorum"). Writes that no replica acknowledged can be lost: Redis
   replicates asynchronously, and no design changes that.
 - Two instances never accept writes at once for longer than about the
   lease duration.
-- A known gap: if the primary's instance manager and a replica's
-  instance manager stall at the same time, a write confirmed with
-  `WAIT 1` can be lost. The chaos tests include this case.
+- If the primary's instance manager and a replica's instance manager
+  stall at the same time, the stalled replica does not count toward the
+  quorum. When the instances that answer might lack a confirmed write
+  without it, as with three instances and `WAIT 1`, the failover waits,
+  and the Redis has no primary until a stalled manager answers again.
 
 ## The instance manager
 
@@ -177,6 +183,9 @@ The instance manager:
   configuration, and starts and supervises the server;
 - carries out the role that `targetPrimary` and the Lease give it, as
   described above;
+- sets the `Redis`'s ACL users on its own server, and keeps its TLS
+  certificate loaded, both read from Secrets on every step
+  ([01-high-availability.md](01-high-availability.md));
 - serves its state on port 9123: `/status` for the operator, `/ready`
   for the readiness probe, `/healthz` for the liveness probe;
 - takes the snapshot of a running `Backup` that names it, restores a new

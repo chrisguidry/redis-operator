@@ -31,6 +31,7 @@ kubectl -n example get pods -l redis.guid.foo/cluster=cache -L redis.guid.foo/ro
 | `Ready` | False | `InstancesNotReady` | fewer instances are ready than `spec.instances` |
 | `Ready` | False | `NoPrimary` | no instance holds the Lease `cache-primary` |
 | `Ready` | False | `FailoverInProgress` | `status.targetPrimary` is `pending`: the primary failed and the operator is choosing the next one |
+| `Ready` | False | `QuorumNotReached` | a failover is waiting for enough instances to detach with their data; see "A failover" |
 | `SwitchoverFailed` | True | `Timeout` | the target did not take the primary role within 30 seconds; the old primary stays, and the operator tries again after 30 seconds |
 | `SwitchoverFailed` | False | `Started` | the last switchover started; this is the normal state after one |
 | `DataLost` | True | `AllInstancesEmpty` | every instance restarted with no data, so the data set started empty on instance 0; a `Redis` without storage sets it whenever all its pods restart, which for one instance is every restart of its pod |
@@ -58,6 +59,7 @@ kubectl -n example get events --field-selector involvedObject.kind=Backup,involv
 |---|---|---|
 | `FailoverStarted` | Warning | the primary failed; the message names it and says why |
 | `PrimaryChosen` | Normal | a failover named the next primary, at the offset given |
+| `FailoverForced` | Warning | a failover named the next primary without its quorum, because of the `redis.guid.foo/failover-without-quorum` annotation |
 | `AllInstancesEmpty` | Warning | every instance restarted with no data |
 | `SwitchoverStarted` | Normal | a planned switchover, with its cause: `PodDeleted`, `NodeCordoned`, `ScaleDown`, or `Rollout` |
 | `SwitchoverDone` | Normal | the new primary holds the Lease |
@@ -147,6 +149,68 @@ the pod's IP alone; there, add `-h "$POD_IP"`.
 and `master_repl_offset`. A replica of `192.0.2.1` is detached: that
 address is reserved for documentation and nothing answers there.
 
+With `spec.tls` and port 6379 closed, connect over TLS on 6380. The
+instance manager keeps the certificate's files in `/manager/tls/`:
+
+```sh
+kubectl -n example exec cache-0 -c redis -- sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli --tls --cacert /manager/tls/ca.crt -h 127.0.0.1 -p 6380 INFO replication'
+```
+
+A certificate from the operator's Certificate names `127.0.0.1`. A
+certificate from your own Secret may not; add `--insecure` then, which
+is safe on the pod's own loopback.
+
+## A client cannot authenticate, or gets NOPERM
+
+`WRONGPASS` for a user declared in `spec.users` means the server does
+not have that user, or has another password for it. `NOPERM` means
+the user's `rules` do not allow the command or the key. Read the
+user's line on a server:
+
+```sh
+kubectl -n example exec cache-0 -c redis -- sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli ACL LIST'
+```
+
+The instance manager logs `set user app` each time it sets a user, and
+`deleted user app` when one leaves the spec. When it cannot set one,
+it logs why once, and leaves the user as it was or absent:
+
+| Log line | Cause |
+|---|---|
+| `cannot set user app: reading secret app-user: not found` | the Secret does not exist in the `Redis`'s namespace |
+| `cannot set user app: secret app-user has no key password` | the key in `password.key` is not in the Secret |
+| `cannot set user app: the password is empty` | the key is there but empty |
+| `cannot set user app: ERR Error in ACL SETUSER modifier ...` | the server refused a rule, such as a command that does not exist |
+| `cannot set user app: ... forbidden` | the instance managers' Role does not grant the Secret yet; the operator adds it on its next pass |
+
+A password changed in its Secret applies within about a second, and
+only new connections need it. The default user's password in
+`cache-app` never changes, and every user's rules leave it alone.
+
+## TLS connections fail
+
+| Symptom | Cause |
+|---|---|
+| Pods stay `Running` but not ready, and the `redis` container logs `waiting for the TLS certificate: reading secret cache-tls: not found` | the certificate's Secret does not exist yet: cert-manager has not issued it, or `spec.tls.secret` names a Secret that is missing |
+| `waiting for the TLS certificate: secret cache-tls has no ca.crt` | the Secret lacks `ca.crt`; an issuer that writes none, such as some ACME issuers, cannot serve a `Redis` |
+| `keeping the loaded TLS certificate: ...` | the Secret changed to something the manager cannot load; the server keeps serving the last good certificate |
+| the operator logs `...; is cert-manager installed?` | the API server has no Certificates; install cert-manager, or use `spec.tls.secret` |
+| a client gets `Connection refused` on 6379 | `plaintext` is `false` and every pod serves TLS, so 6379 is closed; use `tls-uri` from `cache-app` |
+| a client reports a certificate it cannot verify | the client does not trust the issuer's CA, or dials a name the certificate does not cover; read the names with `openssl x509 -noout -text` on `tls.crt` |
+| a replica's `master_link_status` stays `down` on port 6380 | the replica cannot verify the primary's certificate against its `ca.crt`; both must come from one CA |
+
+Read the certificate cert-manager issued:
+
+```sh
+kubectl -n example get certificate cache-tls
+kubectl -n example describe certificate cache-tls
+```
+
+The instance manager logs `loaded a new TLS certificate` each time a
+renewed certificate loads, and `closed the plaintext port; every
+instance serves TLS` or `serving plaintext on 6379` when port 6379
+closes or opens.
+
 ## A client gets a closed or refused connection, or READONLY
 
 A pod carries the label `redis.guid.foo/role: primary` only while it
@@ -163,10 +227,10 @@ the pause. It holds the writes for at most 30 seconds. A held write
 ends with a closed connection, not `READONLY`.
 
 A primary that fenced itself, or found another instance holding the
-Lease, cannot wait: it changes its role at once and closes its clients,
-then closes them again once its pod has lost the label and after the
-route settle. A client that reconnects to it in between gets
-`READONLY`.
+Lease, takes the same steps. Until it closes its clients, a write gets
+`NOREPLICAS` when its replicas are gone, and is held otherwise. A
+primary that cannot reach the API server cannot see its label, so it
+holds writes for the full 30 seconds before it closes its clients.
 
 So a client must reconnect after a closed connection and retry refused
 connections for the length of a switchover. A client that connects to
@@ -242,14 +306,44 @@ answered for 6 seconds, when no instance has held the Lease for 21
 seconds, or when the target restarted with no data. It writes
 `targetPrimary: pending`, every instance detaches, and after every
 reachable instance reports detached, or 5 seconds, it names the
-reachable instance with data and the highest offset. That instance
+reachable instance with data and the highest offset, once it has its
+quorum (below). That instance
 takes the Lease once the old holder releases it, or once it has gone
 15 seconds without a renewal. A
 failover takes about 20 seconds.
 
 Writes that no replica acknowledged before the failure can be lost;
-replication is asynchronous. Writes a client confirmed with `WAIT 1`
-survive. `redis_operator_failovers_total` counts failovers.
+replication is asynchronous. A write a client confirmed with `WAIT n`,
+where `n` is at least `status.minReplicasToWrite` and at least 1,
+survives, because the failover names the next primary only once enough
+instances have detached with their data that one of them holds it: all
+but `n` of the instances. With three instances and the default
+`minReplicasToWrite` of 1, that is two, so a failover after the primary
+and one replica fail at once waits for one of them to return.
+`redis_operator_failovers_total` counts failovers.
+
+While it waits, `Ready` is False with the reason `QuorumNotReached`,
+and its message says how many instances detached and how many the
+failover needs. Bring back the missing instances: a pod that is not
+running, a node that is down, or a NetworkPolicy that keeps the
+operator from port 9123. An instance counts once it reports
+`detached` in `status.instances`. If they will not come back with
+their data, such as a node lost with its volume, force the failover,
+which loses any write that only they held:
+
+```sh
+kubectl -n example annotate redis cache redis.guid.foo/failover-without-quorum=true
+```
+
+The operator names the reachable instance with the highest offset,
+posts `FailoverForced`, and removes the annotation, so it covers one
+failover.
+
+A primary that a partition cuts off from its replicas but not from its
+clients takes writes for about 12 seconds at most: then
+`min-replicas-to-write` refuses them with `NOREPLICAS`, or its instance
+manager fences it. No replica acknowledges those writes, so `WAIT`
+returns 0 for them, and the failover discards them.
 
 A failover that does not finish (`FailoverInProgress` for long) means
 no reachable instance holds data. Check that the pods run and that the
@@ -306,8 +400,9 @@ kubectl -n example logs cache-1 -c metrics
 **`RedisNoPrimary`**: for 3 minutes no pod of the `Redis` has carried
 `redis.guid.foo/role=primary`, so `cache-rw` has no endpoint and every
 write fails. Read the `Ready` condition and `status.targetPrimary`: a
-long `FailoverInProgress` means no reachable instance holds data (see
-"A failover"), and `NoPrimary` means no instance holds the Lease.
+long `FailoverInProgress` means no reachable instance holds data, a
+`QuorumNotReached` means too few instances answered (see "A failover"),
+and `NoPrimary` means no instance holds the Lease.
 
 **`RedisReplicationLinkDown`**: for 5 minutes an instance's
 `redis_master_link_up` has been 0. The alert's `master_host` is the

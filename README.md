@@ -15,7 +15,10 @@ image upgrades.
   status, and an instance manager in each pod carries the decision out,
   holds the primary Lease, and fences its own server when it cannot
   confirm the decision. A planned switchover uses the server's own
-  `FAILOVER` command and loses no write.
+  `FAILOVER` command and loses no write. A failover keeps every write
+  a client confirmed with `WAIT n`, for `n` at least
+  `minReplicasToWrite`: it promotes only once enough instances answered
+  that one of them holds each such write.
 - **Backups** to an S3-compatible object store or to a shared volume,
   on demand or on a cron schedule, with retention, and restore into a
   new `Redis`.
@@ -27,6 +30,10 @@ image upgrades.
 - **Metrics** from redis_exporter beside every instance, and a
   monitoring component with PodMonitors, alerts, and a Grafana
   dashboard.
+- **ACL users and TLS.** ACL users declared with their passwords in
+  Secrets, set on every instance, and TLS with a certificate from a
+  cert-manager issuer or from a Secret. A rotated password or
+  certificate takes effect without a restart.
 
 The design of each feature, with the reasons and the test results, is
 in [plans/](plans/): [the design](plans/00-design.md),
@@ -123,6 +130,18 @@ until the new primary takes over, so new connections are refused for
 that time; the old primary then closes its client connections, and a
 client that retries its connection through `cache-rw` reaches the new
 primary.
+
+With `spec.tls`, the Services also serve TLS on port 6380, named
+`redis-tls`, and `cache-app` also holds `tls-port`, `tls-uri`, and
+`tls-ro-uri`, which start with `rediss://`. With `plaintext: false`,
+the default, port 6379 closes, and `port`, `uri`, and `ro-uri` name
+TLS too. A client trusts the CA that signed the certificate. The
+`declare-a-redis` skill shows both ways to get one.
+
+A user declared in `spec.users` connects with its own name and the
+password in its own Secret, such as
+`redis://app:<password>@cache-rw.<namespace>.svc:6379`. The operator
+makes no Secret for each user.
 
 A client in the same namespace can build its URL from the password:
 

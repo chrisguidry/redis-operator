@@ -17,6 +17,7 @@ import (
 	crdvalidation "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/validation"
 	structuralschema "k8s.io/apiextensions-apiserver/pkg/apiserver/schema"
 	celschema "k8s.io/apiextensions-apiserver/pkg/apiserver/schema/cel"
+	"k8s.io/apiextensions-apiserver/pkg/apiserver/schema/listtype"
 	"k8s.io/apiextensions-apiserver/pkg/apiserver/validation"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -109,9 +110,9 @@ func internalSchema(t *testing.T) *apiextensions.JSONSchemaProps {
 	return internal
 }
 
-// validate runs both passes over object, and the CEL transition rules
-// against old when it is not nil, the way the API server answers an
-// update.
+// validate runs both passes over object, the check that a list keyed
+// by a field holds each key once, and the CEL transition rules against
+// old when it is not nil, the way the API server answers an update.
 func validate(t *testing.T, object, old map[string]any) field.ErrorList {
 	t.Helper()
 	schema := internalSchema(t)
@@ -126,6 +127,7 @@ func validate(t *testing.T, object, old map[string]any) field.ErrorList {
 	}
 	celErrs, _ := celschema.NewValidator(structural, true, celconfig.PerCallLimit).Validate(
 		t.Context(), field.NewPath(""), structural, object, oldObject, celconfig.RuntimeCELCostBudget)
+	errs = append(errs, listtype.ValidateListSetsAndMaps(field.NewPath(""), structural, object)...)
 	return append(errs, celErrs...)
 }
 
@@ -160,12 +162,52 @@ func TestTheCRDRefuses(t *testing.T) {
 		{"as many required replicas as instances", map[string]any{"instances": 2, "minReplicasToWrite": 2}, "minReplicasToWrite must be less than instances"},
 		{"a single key with a comma", map[string]any{"metrics": map[string]any{"checkSingleKeys": []any{"a,b"}}}, "spec.metrics.checkSingleKeys"},
 		{"an empty single key", map[string]any{"metrics": map[string]any{"checkSingleKeys": []any{""}}}, "spec.metrics.checkSingleKeys"},
+		{"a user named default", map[string]any{"users": []any{user("default", "+@all")}}, "the default user is the one in <name>-app"},
+		{"a user name with a space", map[string]any{"users": []any{user("my app", "+@all")}}, "spec.users[0].name"},
+		{"two users of one name", map[string]any{"users": []any{user("app", "+get"), user("app", "+set")}}, "Duplicate value"},
+		{"a user with no rules", map[string]any{"users": []any{user("app", "")}}, "spec.users[0].rules"},
+		{"a rule that sets a password", map[string]any{"users": []any{user("app", "+@all >hunter2")}}, "rules cannot set a password"},
+		{"a rule that sets a hashed password", map[string]any{"users": []any{user("app", "#abc +@all")}}, "rules cannot set a password"},
+		{"a rule that removes the password", map[string]any{"users": []any{user("app", "+@all nopass")}}, "rules cannot set a password"},
+		{"a rule that turns the user off", map[string]any{"users": []any{user("app", "OFF +@all")}}, "rules cannot set a password"},
+		{"a rule that resets the user", map[string]any{"users": []any{user("app", "+@all reset")}}, "rules cannot set a password"},
+		{"tls with an issuer and a secret", map[string]any{"tls": map[string]any{"issuerRef": map[string]any{"name": "ca"}, "secret": "cache-tls"}}, "either a cert-manager issuerRef or a secret"},
+		{"tls with neither", map[string]any{"tls": map[string]any{"plaintext": true}}, "either a cert-manager issuerRef or a secret"},
+		{"an issuer of an unknown kind", map[string]any{"tls": map[string]any{"issuerRef": map[string]any{"name": "ca", "kind": "Vault"}}}, "spec.tls.issuerRef.kind"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			errs := validate(t, redisObject(c.spec), nil)
 
 			mustMatch(t, strings.Contains(errs.ToAggregate().Error(), c.want), true)
+		})
+	}
+}
+
+// user is one entry of spec.users, with its password in the Secret
+// app-user.
+func user(name, rules string) map[string]any {
+	return map[string]any{"name": name, "password": map[string]any{"secret": "app-user", "key": "password"}, "rules": rules}
+}
+
+func TestTheCRDAccepts(t *testing.T) {
+	cases := []struct {
+		name string
+		spec map[string]any
+	}{
+		{"users with key patterns, channels, and a selector", map[string]any{"users": []any{
+			user("app", "~app:* &app:* +@all -@dangerous"),
+			user("reader.v2", "+@read ~* (~audit:* +xadd) %R~ro:*"),
+			user("ON-call", "+info"),
+		}}},
+		{"tls from an issuer", map[string]any{"tls": map[string]any{"issuerRef": map[string]any{"name": "ca", "kind": "ClusterIssuer"}}}},
+		{"tls from a secret, with plaintext", map[string]any{"tls": map[string]any{"secret": "cache-tls", "plaintext": true}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			errs := validate(t, redisObject(c.spec), nil)
+
+			mustMatch(t, errs.ToAggregate(), nil)
 		})
 	}
 }

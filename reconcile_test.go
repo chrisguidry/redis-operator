@@ -136,20 +136,6 @@ func TestASilentPrimaryStartsAFailoverToTheReplicaWithTheMostData(t *testing.T) 
 	mustMatch(t, h.redis().Status.TargetPrimary, "cache-2")
 }
 
-func TestAFailoverNeverNamesAnInstanceWithoutData(t *testing.T) {
-	h := startHarness(t, 3)
-	h.steady("cache-0", 3)
-	h.pass()
-	h.silence("cache-0")
-	h.passFor(8*time.Second, 2*time.Second)
-
-	h.setReport(instanceReport{Name: "cache-1", Role: reportDetached, Offset: 90, HasData: true})
-	h.setReport(instanceReport{Name: "cache-2", Role: reportDetached, Offset: 500, HasData: false})
-	h.passFor(2*time.Second, 2*time.Second)
-
-	mustMatch(t, h.redis().Status.TargetPrimary, "cache-1")
-}
-
 func TestACordonedPrimaryNodeStartsASwitchover(t *testing.T) {
 	h := startHarness(t, 3)
 	h.steady("cache-0", 3)

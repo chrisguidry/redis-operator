@@ -12,6 +12,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -46,6 +47,17 @@ type serverSettings struct {
 	// restoredSnapshot starts the server with its append-only file off,
 	// so it loads the snapshot in its data directory.
 	restoredSnapshot bool
+	// tls serves TLS beside the plaintext port, or nothing when nil.
+	tls *serverTLS
+}
+
+// serverTLS is where the server serves TLS, and the files it serves
+// with, which the manager keeps current (manager_tls.go).
+type serverTLS struct {
+	port int
+	dir  string
+	// plaintextClosed starts the server with no plaintext port.
+	plaintextClosed bool
 }
 
 // minReplicasMaxLag is how long a replica may go without acknowledging
@@ -58,8 +70,12 @@ func (s serverSettings) config() string {
 	if s.loopback {
 		bind += " 127.0.0.1"
 	}
+	port := s.port
+	if s.tls != nil && s.tls.plaintextClosed {
+		port = 0
+	}
 	lines := []string{
-		"port " + strconv.Itoa(s.port),
+		"port " + strconv.Itoa(port),
 		bind,
 		"protected-mode no",
 		"dir " + s.dataDir,
@@ -75,6 +91,16 @@ func (s serverSettings) config() string {
 		fmt.Sprintf("min-replicas-to-write %d", s.minReplicasToWrite),
 		fmt.Sprintf("min-replicas-max-lag %d", minReplicasMaxLag),
 		fmt.Sprintf("replicaof %s %d", detachedHost, s.port),
+	}
+	if s.tls != nil {
+		lines = append(lines,
+			"tls-port "+strconv.Itoa(s.tls.port),
+			"tls-cert-file "+quoteConfig(filepath.Join(s.tls.dir, tlsCertFile)),
+			"tls-key-file "+quoteConfig(filepath.Join(s.tls.dir, tlsKeyFile)),
+			"tls-ca-cert-file "+quoteConfig(filepath.Join(s.tls.dir, tlsCAFile)),
+			// Clients authenticate with a password, not a certificate.
+			"tls-auth-clients no",
+		)
 	}
 	if s.persistent && !s.restoredSnapshot {
 		lines = append(lines, "appendonly yes", "appendfsync everysec")
@@ -119,12 +145,21 @@ func startServer(settings serverSettings) (*exec.Cmd, error) {
 type server struct {
 	addr     string
 	password string
-	conn     *redisConn
+	// tls is how the manager reaches a server that serves TLS, or nil
+	// for plaintext.
+	tls  *tls.Config
+	conn *redisConn
+}
+
+// another is a second connection to the same server, for work that
+// runs beside the step loop.
+func (s *server) another() *server {
+	return &server{addr: s.addr, password: s.password, tls: s.tls}
 }
 
 func (s *server) do(ctx context.Context, args ...string) (any, error) {
 	if s.conn == nil {
-		conn, err := dialRedis(ctx, s.addr, s.password)
+		conn, err := dialRedisTLS(ctx, s.addr, s.password, s.tls)
 		if err != nil {
 			return nil, err
 		}
