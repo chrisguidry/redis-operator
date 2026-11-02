@@ -18,7 +18,7 @@ document to `completed/` and states what the tests measured.
 
 ## Milestones
 
-1. High availability: one primary and its replicas, failover, and
+1. [High availability](01-high-availability.md): one primary and its replicas, failover, and
    switchover before a node drains.
 2. Backups to object storage, and restore into a new deployment.
 3. Adoption: replicate from an existing Redis or Valkey, then promote.
