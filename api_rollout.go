@@ -2,7 +2,7 @@ package main
 
 // A staged change of spec.image: a canary replica proves the new image
 // before the rest roll, and a failed canary is rolled back.
-// plans/04-upgrades.md describes it.
+// plans/completed/04-upgrades.md describes it.
 
 // The phases of a rollout.
 const (

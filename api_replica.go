@@ -1,7 +1,7 @@
 package main
 
 // Replica mode: a Redis that replicates from a source outside the
-// operator until it is promoted. plans/03-adoption.md describes it.
+// operator until it is promoted. plans/completed/03-adoption.md describes it.
 
 // ReplicaSpec names the source a Redis replicates from while Enabled.
 type ReplicaSpec struct {

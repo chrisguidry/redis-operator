@@ -1,7 +1,7 @@
 package main
 
 // TLS for a Redis's servers, with a certificate that cert-manager issues
-// or that the user keeps in a Secret. plans/01-high-availability.md
+// or that the user keeps in a Secret. plans/completed/01-high-availability.md
 // describes it.
 
 const (

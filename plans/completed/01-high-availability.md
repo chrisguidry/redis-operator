@@ -3,7 +3,7 @@
 A `Redis` with three instances keeps one writable primary through a
 primary crash, an operator crash, a node drain, a frozen process, and a
 spec change, and loses no write that a client confirmed with `WAIT 1`.
-[00-design.md](00-design.md) gives the failover design. This document
+[00-design.md](../00-design.md) gives the failover design. This document
 gives the resource, the objects the operator makes, the timings, and the
 tests.
 

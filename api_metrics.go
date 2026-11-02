@@ -1,7 +1,7 @@
 package main
 
 // The metrics exporter that runs beside each instance.
-// plans/01-high-availability.md describes it.
+// plans/completed/01-high-availability.md describes it.
 
 // defaultExporterImage is the redis_exporter image every instance runs
 // beside its server unless spec.metrics.image names another. It moves

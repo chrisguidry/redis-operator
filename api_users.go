@@ -1,7 +1,7 @@
 package main
 
 // ACL users declared beside the default user, each with its password in
-// a Secret. plans/01-high-availability.md describes them.
+// a Secret. plans/completed/01-high-availability.md describes them.
 
 import (
 	"crypto/sha256"

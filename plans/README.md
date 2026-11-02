@@ -18,11 +18,13 @@ document to `completed/` and states what the tests measured.
 
 ## Milestones
 
-1. [High availability](01-high-availability.md): one primary and its replicas, failover, and
+1. [High availability](completed/01-high-availability.md): one primary and its replicas, failover, and
    switchover before a node drains.
-2. [Backups](02-backups.md) to object storage or a volume, and restore
+2. [Backups](completed/02-backups.md) to object storage or a volume, and restore
    into a new deployment.
-3. [Adoption](03-adoption.md): replicate from an existing Redis or
+3. [Adoption](completed/03-adoption.md): replicate from an existing Redis or
    Valkey, then promote.
-4. [Upgrades and downgrades](04-upgrades.md), staged so they lose no
+4. [Upgrades and downgrades](completed/04-upgrades.md), staged so they lose no
    data.
+5. [RedisCluster](05-redis-cluster.md): sharded Redis Cluster and
+   Valkey Cluster. Not designed yet.

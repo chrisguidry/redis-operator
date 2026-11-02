@@ -37,9 +37,9 @@ image upgrades.
 
 The design of each feature, with the reasons and the test results, is
 in [plans/](plans/): [the design](plans/00-design.md),
-[high availability](plans/01-high-availability.md),
-[backups](plans/02-backups.md), [adoption](plans/03-adoption.md), and
-[upgrades](plans/04-upgrades.md).
+[high availability](plans/completed/01-high-availability.md),
+[backups](plans/completed/02-backups.md), [adoption](plans/completed/03-adoption.md), and
+[upgrades](plans/completed/04-upgrades.md).
 
 ## Install
 

@@ -24,7 +24,7 @@ The API group is `redis.guid.foo`, version `v1alpha1`.
   `Redis` cannot become a `RedisCluster` in place, and each topology
   fails over through different code.
 - `Backup` is one snapshot of a `Redis`, and `ScheduledBackup` makes
-  `Backup`s on a cron schedule ([02-backups.md](02-backups.md)). Both
+  `Backup`s on a cron schedule ([02-backups.md](completed/02-backups.md)). Both
   name their `Redis` in `spec.redis`.
 - Both data kinds take `engine: redis | valkey`. Redis 8 and Valkey
   speak the same protocol, and the operator uses only commands that both
@@ -134,7 +134,7 @@ The design instead:
    closes its clients' connections, as Sentinel does, and they
    reconnect through the Service. It does so only after the label has
    left its pod, or they would reconnect to it.
-   [01-high-availability.md](01-high-availability.md) gives the steps.
+   [01-high-availability.md](completed/01-high-availability.md) gives the steps.
 
 ### What this design costs
 
@@ -159,7 +159,7 @@ The design instead:
   survives. The failover names the next primary only once it has
   reached enough instances that one of them holds every such write,
   unless a person forces it
-  ([01-high-availability.md](01-high-availability.md), "The failover
+  ([01-high-availability.md](completed/01-high-availability.md), "The failover
   quorum"). Writes that no replica acknowledged can be lost: Redis
   replicates asynchronously, and no design changes that.
 - Two instances never accept writes at once for longer than about the
@@ -185,16 +185,16 @@ The instance manager:
   described above;
 - sets the `Redis`'s ACL users on its own server, and keeps its TLS
   certificate loaded, both read from Secrets on every step
-  ([01-high-availability.md](01-high-availability.md));
+  ([01-high-availability.md](completed/01-high-availability.md));
 - serves its state on port 9123: `/status` for the operator, `/ready`
   for the readiness probe, `/healthz` for the liveness probe, and
   serves neither `/status` nor a ready `/ready` from a report taken
   before its process was paused
-  ([01-high-availability.md](01-high-availability.md));
+  ([01-high-availability.md](completed/01-high-availability.md));
 - takes the snapshot of a running `Backup` that names it, restores a new
   `Redis` from a snapshot before its server starts, and makes the Lease
   holder follow the source in replica mode
-  ([02-backups.md](02-backups.md), [03-adoption.md](03-adoption.md)).
+  ([02-backups.md](completed/02-backups.md), [03-adoption.md](completed/03-adoption.md)).
 
 It talks to Redis over RESP with a small client in this repository, and
 to the API server with the same hand-written client as the operator.
@@ -209,7 +209,7 @@ no client-go and no controller framework. It reconciles from watches of
 instance manager's `/status`. It serves Prometheus metrics, prefixed
 `redis_operator_`, on port 9200, or on `METRICS_PORT`. `CANARY_SOAK` and
 `CANARY_TIMEOUT` override the rollout timings of
-[04-upgrades.md](04-upgrades.md).
+[04-upgrades.md](completed/04-upgrades.md).
 
 For each `Redis` it applies a StatefulSet with `podManagementPolicy:
 Parallel` and `updateStrategy: OnDelete`. The StatefulSet gives stable
@@ -240,10 +240,10 @@ writes at once.
 
 ## Milestones
 
-1. [High availability](01-high-availability.md).
-2. [Backups](02-backups.md) to object storage or a volume, and restore
+1. [High availability](completed/01-high-availability.md).
+2. [Backups](completed/02-backups.md) to object storage or a volume, and restore
    into a new `Redis`.
-3. [Adoption](03-adoption.md): replicate from an existing Redis or
+3. [Adoption](completed/03-adoption.md): replicate from an existing Redis or
    Valkey, then promote.
-4. [Upgrades and downgrades](04-upgrades.md), staged so they lose no
+4. [Upgrades and downgrades](completed/04-upgrades.md), staged so they lose no
    data.
