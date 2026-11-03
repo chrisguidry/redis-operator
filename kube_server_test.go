@@ -246,6 +246,10 @@ func (f *fakeKube) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	f.mutex.Lock()
 	f.log = append(f.log, fakeRequest{r.Method, r.URL.Path, r.URL.Query(), r.Header.Get("Content-Type"), string(body)})
+	// A watch holds the drop channel that was current when its request
+	// was logged, so a test that saw the request and then drops the
+	// watches always ends this one.
+	dropping := f.dropping
 	f.mutex.Unlock()
 	if f.refused(w, r) {
 		return
@@ -256,7 +260,7 @@ func (f *fakeKube) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case !parsed:
 		writeKubeStatus(w, http.StatusNotFound, "the fake API server has no route for "+r.URL.Path)
 	case r.Method == http.MethodGet && key.name == "" && r.URL.Query().Get("watch") == "true":
-		f.serveWatch(w, r, key, parseSelector(r.URL.Query().Get("labelSelector")))
+		f.serveWatch(w, r, key, parseSelector(r.URL.Query().Get("labelSelector")), dropping)
 	case r.Method == http.MethodGet && key.name == "":
 		f.serveList(w, key, parseSelector(r.URL.Query().Get("labelSelector")))
 	case r.Method == http.MethodPost && key.name == "" && !status:
@@ -339,15 +343,12 @@ func (f *fakeKube) sortedKeys() []fakeKey {
 // resourceVersion until the client leaves or dropWatches ends it. An
 // empty version or "0" starts with an ADDED event for each object, as
 // the API server does.
-func (f *fakeKube) serveWatch(w http.ResponseWriter, r *http.Request, collection fakeKey, selector map[string]string) {
+func (f *fakeKube) serveWatch(w http.ResponseWriter, r *http.Request, collection fakeKey, selector map[string]string, dropping chan struct{}) {
 	requested := r.URL.Query().Get("resourceVersion")
 	encoder := json.NewEncoder(w)
 	w.Header().Set("Content-Type", jsonContentType)
 
 	f.mutex.Lock()
-	// The stream holds the channel that was current when it opened, so
-	// a drop while it writes still ends it.
-	dropping := f.dropping
 	var pending []fakeEvent
 	last, err := strconv.Atoi(requested)
 	if requested == "" || requested == "0" {
