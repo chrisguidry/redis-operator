@@ -54,7 +54,7 @@ jobs:
       fail-fast: false
       matrix:
         engine: [redis, valkey]
-        shard: [failover, partition, access, backup_volume, scale, upgrade]
+        shard: [failover, partition, operator, access, backup_volume, rollout, scale, broken]
     steps:
       - uses: actions/checkout@v7
       # The operator's binary is built on the runner, so the build reuses

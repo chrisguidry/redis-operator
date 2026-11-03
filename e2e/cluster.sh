@@ -46,11 +46,20 @@ node_containers() {
   for i in $(seq 1 "$AGENTS"); do echo "$SERVER-agent-$i"; done
 }
 
-# prepare_images builds the operator image and pulls the server image
-# of this run's engine, SeaweedFS's, and the exporter's, then saves all
-# four to one archive. It runs while the cluster starts. The binary is
-# built on this machine, as the Dockerfile builds it, so it reuses this
-# machine's Go build cache, and the image holds only the binary.
+# e2e_images lists the images every node gets: the operator's, the
+# server image of this run's engine, and the exporter's. SeaweedFS's,
+# the largest, joins them only when backup_restore runs, since that is
+# the one scenario that starts a store.
+e2e_images() {
+  echo "$OPERATOR_IMAGE $SERVER_IMAGE $EXPORTER_IMAGE"
+  case " $SCENARIOS " in *" backup_restore "*) echo "$SEAWEEDFS_IMAGE" ;; esac
+}
+
+# prepare_images builds the operator image and pulls the others, then
+# saves them all to one archive. It runs while the cluster starts. The
+# binary is built on this machine, as the Dockerfile builds it, so it
+# reuses this machine's Go build cache, and the image holds only the
+# binary.
 prepare_images() {
   log "building the operator image ($OPERATOR_IMAGE)"
   mkdir -p "$WORKDIR/image"
@@ -62,20 +71,23 @@ USER 65532:65532
 ENTRYPOINT ["/redis-operator"]
 DOCKERFILE
   local image pids=()
-  for image in "$SERVER_IMAGE" "$SEAWEEDFS_IMAGE" "$EXPORTER_IMAGE"; do
+  # shellcheck disable=SC2046
+  for image in $(e2e_images); do
+    [ "$image" = "$OPERATOR_IMAGE" ] && continue
     docker pull -q "$image" >/dev/null &
     pids+=($!)
   done
   for pid in "${pids[@]}"; do
     wait "$pid"
   done
-  docker save -o "$WORKDIR/images.tar" "$OPERATOR_IMAGE" "$SERVER_IMAGE" "$SEAWEEDFS_IMAGE" "$EXPORTER_IMAGE"
+  # shellcheck disable=SC2046
+  docker save -o "$WORKDIR/images.tar" $(e2e_images)
 }
 
 # load_images imports the archive prepare_images saved into every node
 # at once.
 load_images() {
-  log "loading $OPERATOR_IMAGE, $SERVER_IMAGE, $SEAWEEDFS_IMAGE, and $EXPORTER_IMAGE into every node"
+  log "loading $(e2e_images | xargs) into every node"
   local node pids=()
   for node in $(node_containers); do
     docker exec -i "$node" ctr images import - <"$WORKDIR/images.tar" >/dev/null &
@@ -95,7 +107,7 @@ deploy_operator() {
     sed "s#ghcr.io/chrisguidry/redis-operator:latest#$OPERATOR_IMAGE#" |
     kubectl apply -f - >/dev/null
   # Short canary timings, so a failed rollout shows within the run.
-  kubectl -n redis-operator set env deployment/redis-operator CANARY_SOAK=20s CANARY_TIMEOUT=90s >/dev/null
+  kubectl -n redis-operator set env deployment/redis-operator CANARY_SOAK=10s CANARY_TIMEOUT=40s >/dev/null
   kubectl -n redis-operator rollout status deployment/redis-operator --timeout=120s >/dev/null
 }
 

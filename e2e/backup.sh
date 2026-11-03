@@ -185,12 +185,14 @@ YAML
   assert_no_confirmed_write_lost "backing up to a volume"
 }
 
-# scheduled_volume_backups lets a ScheduledBackup make a Backup every
-# minute under a retention of 30 seconds, and waits for retention to
-# delete the first one, which must take its file off the volume too.
+# scheduled_volume_backups lets a ScheduledBackup make a Backup on the
+# next minute under a retention of 10 seconds, then makes a Backup by
+# hand. Retention keeps the newest completed Backup, so the scheduled
+# one goes once the one made by hand completes, and its file must leave
+# the volume too. The cron tests cover a schedule that fires again.
 scheduled_volume_backups() {
-  log "scenario: a ScheduledBackup every minute under a retention of 30 seconds"
-  kubectl -n "$NS" patch redis cache --type=merge -p '{"spec":{"backup":{"retention":"30s"}}}' >/dev/null
+  log "scenario: a ScheduledBackup every minute under a retention of 10 seconds"
+  kubectl -n "$NS" patch redis cache --type=merge -p '{"spec":{"backup":{"retention":"10s"}}}' >/dev/null
   kubectl -n "$NS" apply -f - >/dev/null <<YAML
 apiVersion: redis.guid.foo/v1alpha1
 kind: ScheduledBackup
@@ -204,11 +206,21 @@ YAML
   local first key
   first=$(scheduled_backups | head -1)
   retry "the first scheduled backup completing" 180 backup_completed "$first"
+  kubectl -n "$NS" delete scheduledbackup every-minute --wait=true --timeout=60s >/dev/null
   key=$(backup_key "$first")
   retry "the first scheduled backup's file on the volume" 30 volume_has_file "$key"
-  retry "retention deleting the first scheduled backup" 300 backup_is_gone "$first"
+  kubectl -n "$NS" apply -f - >/dev/null <<YAML
+apiVersion: redis.guid.foo/v1alpha1
+kind: Backup
+metadata:
+  name: after-the-schedule
+spec:
+  redis: cache
+YAML
+  retry "the backup made by hand completing" 180 backup_completed after-the-schedule
+  retry "retention deleting the first scheduled backup" 120 backup_is_gone "$first"
   retry "the deleted backup's file leaving the volume" 30 volume_lacks_file "$key"
-  kubectl -n "$NS" delete scheduledbackup every-minute --wait=true --timeout=60s >/dev/null
+  kubectl -n "$NS" delete backup after-the-schedule --wait=true --timeout=60s >/dev/null
   kubectl -n "$NS" delete backup -l redis.guid.foo/scheduled-backup --wait=true --timeout=120s >/dev/null
 }
 
