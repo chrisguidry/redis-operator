@@ -40,10 +40,12 @@ func (c *controller) reconcile(ctx context.Context, r *Redis, w *world) error {
 	}
 	polled := c.poll(ctx, st, pods)
 	settled := primarySettled(r.Status.TargetPrimary, holder, byName, st, polled)
-	scale := replicasFor(r, holder, w.statefulSets[key].Spec.Replicas, settled)
-	if err := c.ensureChildren(ctx, r, st, w, scale); err != nil {
+	safe := shrinkSafe(r, holder, byName, st, polled)
+	scale := replicasFor(r, holder, scaleAsRead(w.statefulSets[key].Spec.Replicas, st.appliedScale), settled, safe)
+	if err := c.ensureChildren(ctx, r, st, w, scale, primaryLabeled(pods)); err != nil {
 		return err
 	}
+	st.appliedScale = scale
 	now := c.now()
 
 	status := r.Status
@@ -470,8 +472,12 @@ func (d *decision) summarize(pods []Pod) {
 	case len(pods) > want:
 		reason, message = "ScalingDown", fmt.Sprintf("%s is primary, and the instances beyond %d are being removed", d.holder, want)
 	}
-	if d.scaleDownHeld() && reason != "ScalingDown" {
-		message += fmt.Sprintf(". The StatefulSet keeps its %d pods until the next primary holds the lease, then scales down to %d", d.scale, want)
+	if d.scaleHeld() && reason != "ScalingDown" {
+		direction := "down"
+		if d.scale < want {
+			direction = "up"
+		}
+		message += fmt.Sprintf(". The StatefulSet keeps its %d pods until the next primary holds the lease, then scales %s to %d", d.scale, direction, want)
 	}
 	d.setCondition(readyCondition, status, reason, message)
 }

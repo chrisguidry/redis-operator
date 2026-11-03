@@ -84,8 +84,31 @@ func TestPromotionPausesTheSourceAndWaitsForTheHolder(t *testing.T) {
 	h.pass()
 
 	mustMatch(t, h.redis().Status.Replica.Phase, replicaPromoted)
+}
+
+// A client that moves to the Redis once Adopted is True must find the
+// holder taking writes, and the holder's manager stops following the
+// source only on its next step after the phase changes.
+func TestAdoptedTurnsTrueOnlyOnceTheHolderTakesWrites(t *testing.T) {
+	t.Parallel()
+	h := startHarness(t, 2)
+	port := freePort(t)
+	h.replicaOf("127.0.0.1", port, true)
+	h.pass()
+	h.adoptingHolderUnlinked("127.0.0.1")
+	h.pass()
+
+	h.replicaOf("127.0.0.1", port, false)
+	h.pass()
 	adopted, _ := findCondition(h.redis().Status.Conditions, "Adopted")
+	mustMatch(t, adopted.Status, ConditionFalse)
+	mustMatch(t, adopted.Reason, "TakingWrites")
+
+	h.steady("cache-0", 2)
+	h.pass()
+	adopted, _ = findCondition(h.redis().Status.Conditions, "Adopted")
 	mustMatch(t, adopted.Status, ConditionTrue)
+	mustMatch(t, adopted.Reason, "Promoted")
 }
 
 func TestPromotionWithASourceNeitherTheOperatorNorTheHolderReachesPromotesAtOnce(t *testing.T) {

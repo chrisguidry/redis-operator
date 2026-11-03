@@ -157,6 +157,7 @@ type manager struct {
 	everHadPrimary bool
 	minReplicas    int
 	instances      int
+	specInstances  int
 	podIPs         map[string]string
 
 	hasData       bool
@@ -460,7 +461,10 @@ func (m *manager) readDecision(ctx context.Context, now time.Time) error {
 	m.switchingOver = redis.Status.Switchover != nil
 	m.everHadPrimary = redis.Status.CurrentPrimary != ""
 	m.minReplicas = redis.minReplicasToWrite()
-	m.instances = redis.Spec.instances()
+	// A scale-down that waits keeps pods beyond spec.instances, and
+	// the operator lists every pod in the status.
+	m.instances = max(redis.Spec.instances(), len(redis.Status.Instances))
+	m.specInstances = redis.Spec.instances()
 	m.replicaMode = redis.Status.replicating() && redis.Spec.Replica != nil
 	if redis.Spec.Replica != nil {
 		m.replicaSource = redis.Spec.Replica.Source
@@ -660,6 +664,13 @@ func (m *manager) stepAsOther(ctx context.Context, now time.Time, info replicati
 	case m.target == targetPending:
 		m.line(m.config.podName + ": detached, a failover is pending")
 		return m.demote(ctx, info, func() error { return m.server.detach(ctx, info, m.config.port) })
+	case m.scaledAway() && holder != "" && holder == m.target:
+		// A scale-down removes this instance. Detached, it acknowledges
+		// no more writes, so its offset is final, and the operator
+		// shrinks the StatefulSet once the instances that stay are past
+		// it. A failover still counts it, with its data.
+		m.line(m.config.podName + ": detached, the scale-down removes this instance")
+		return m.server.detach(ctx, info, m.config.port)
 	case holder != "" && holder != m.config.podName && m.podIPs[holder] != "":
 		if err := m.setMasterauth(ctx, m.config.password); err != nil {
 			return err
@@ -687,6 +698,14 @@ func (m *manager) stepAsOther(ctx context.Context, now time.Time, info replicati
 		m.line(m.config.podName + ": detached, no primary holds the lease")
 		return m.demote(ctx, info, func() error { return m.server.detach(ctx, info, m.config.port) })
 	}
+}
+
+// scaledAway reports whether a scale-down removes this instance: its
+// ordinal is at or beyond spec.instances, and the min-replicas-to-write
+// the primary runs with is one the instances that stay can meet, so
+// the primary does not count on this one to take writes.
+func (m *manager) scaledAway() bool {
+	return ordinal(m.config.podName) >= m.specInstances && m.minReplicas < m.specInstances
 }
 
 func (m *manager) reportFrom(info replicationInfo, err error) instanceReport {

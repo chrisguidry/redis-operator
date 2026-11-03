@@ -134,7 +134,7 @@ them.
 | Certificate | `cache-tls` | with `tls.issuerRef` only: the certificate cert-manager issues into the Secret `cache-tls` |
 | ServiceAccount, Role, RoleBinding | `cache` | what the instance managers may read and write |
 | PodDisruptionBudget | `cache-primary` | `minAvailable: 1` on the primary, when the StatefulSet has more than one pod |
-| PodDisruptionBudget | `cache-replicas` | one replica may be evicted at a time |
+| PodDisruptionBudget | `cache-replicas` | one replica may be evicted at a time, and one pod while no pod carries the primary label |
 | Lease | `cache-primary` | held by the primary's instance manager |
 
 Each pod carries the label `redis.guid.foo/cluster: cache`. The
@@ -413,7 +413,11 @@ Scaling down removes the pods with the highest ordinals. When the
 primary is one of them, the operator keeps the StatefulSet at its old
 size, switches over to the most caught-up replica that stays, with the
 reason `ScaleDown`, and shrinks the StatefulSet once that replica holds
-the Lease. The volume claims of removed instances are deleted with
+the Lease. Each replica that the scale-down removes first detaches, so
+it acknowledges no more writes, and the StatefulSet shrinks once every
+replica that stays has reached the removed ones' offsets: a write a
+client confirmed with `WAIT` on a removed replica is then on one that
+stays. The volume claims of removed instances are deleted with
 them, so a later scale-up starts those instances empty, and each copies
 the data from the primary. Scaling to one instance removes the
 `cache-primary` PodDisruptionBudget, so a drain can evict the only pod.
@@ -429,7 +433,9 @@ with a `ScaleDown` switchover first if the new primary is one of the
 pods it removes. While it waits, the `Ready` message ends with `The
 StatefulSet keeps its 3 pods until the next primary holds the lease,
 then scales down to 1`, and the budgets still let a drain evict only
-one replica at a time.
+one replica at a time. A scale-up waits the same way, since the new
+pods start empty and could not help a failover, and its message ends
+with `then scales up to 5`.
 
 `minReplicasToWrite` must stay less than `instances`. If it is set
 explicitly, the API server refuses a scale to a count at or below it;

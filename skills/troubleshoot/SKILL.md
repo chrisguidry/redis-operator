@@ -38,7 +38,7 @@ kubectl -n example get pods -l redis.guid.foo/cluster=cache -L redis.guid.foo/ro
 | `RolloutFailed` | True | `CanaryFailed` | a new image failed on the canary and was rolled back; see the `upgrade` skill |
 | `RolloutFailed` | False | `Completed`, `Reverted` | the last rollout finished, or `spec.image` went back |
 | `SourceReachable` | True/False | `Reachable`, `Unreachable` | replica mode only: whether the operator reaches the source |
-| `Adopted` | True/False | `Promoted`, `AlreadyPrimary`, `CatchUpTimedOut`, `PauseRefused`, `SourceRefused`, `SourceUnreachableFromOperator`, `PasswordUnreadable` | replica mode; see the `adopt-an-existing-redis` skill |
+| `Adopted` | True/False | `Promoted`, `TakingWrites`, `AlreadyPrimary`, `CatchUpTimedOut`, `PauseRefused`, `SourceRefused`, `SourceUnreachableFromOperator`, `PasswordUnreadable` | replica mode; see the `adopt-an-existing-redis` skill |
 
 `DataLost` stays `True` once set; it records that the data set started
 again, not that it is still missing.
@@ -49,7 +49,15 @@ the next primary holds the lease, then scales down to 1` means
 with no holder left the primary unsettled. The pods stay so the
 failover can reach the writes they hold. Read the reason for what the
 `Redis` waits on; once the next primary holds the Lease, the scale-down
-goes on by itself.
+goes on by itself. A message that ends with `then scales up to 5` is
+the same wait for a scale-up.
+
+A `ScalingDown` reason that stays for more than a few seconds with no
+other message means the operator waits for the replicas the
+scale-down removes to detach, or for the replicas that stay to reach
+their offsets. Each instance's offset is in `status.instances`; a
+replica that stays and is not linked to the primary holds the
+scale-down until it is.
 
 A `ScalingDown` message that says the holder's `pod is not ready or its
 manager did not answer as primary` means the instance that holds the
@@ -300,7 +308,9 @@ on the new revision.
 - `cache-primary` keeps `minAvailable: 1` on the pod with the primary
   label, when the StatefulSet has more than one pod. An eviction cannot
   take the primary.
-- `cache-replicas` lets one replica go at a time.
+- `cache-replicas` lets one replica go at a time. While no pod
+  carries the primary label, as during a failover, every pod is under
+  it, and it still lets only one go.
 
 When the primary's node is cordoned, the operator switches over to a
 replica on another node, with the reason `NodeCordoned`. The old

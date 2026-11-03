@@ -536,6 +536,58 @@ func TestAStoppingPrimaryAsksForASwitchoverAndHandsOver(t *testing.T) {
 	mustMatch(t, got, any("value"))
 }
 
+// A scale-down removes the highest ordinals, and a replica there may
+// have acknowledged a write the replicas that stay have not taken yet.
+// It detaches first, so its offset is final, and the operator shrinks
+// once the replicas that stay are past it.
+func TestAReplicaThatAScaleDownRemovesDetaches(t *testing.T) {
+	t.Parallel()
+	h := twoInstances(t, "redis")
+
+	h.api.update(redisResource, testNamespace, h.name, func(object map[string]any) {
+		object["spec"].(map[string]any)["instances"] = 1
+	})
+
+	h.waitFor("cache-1 detaches with its data", func() bool {
+		report := h.report("cache-1")
+		return report.Role == reportDetached && report.HasData
+	})
+	_, err := h.client("cache-0").do(context.Background(), "SET", "after", "detach")
+	mustSucceed(t, err)
+}
+
+// A scale-down to one instance that waits keeps its replicas, and a
+// primary that stops then still has one to hand its role to, so it asks
+// for a switchover as it would at any other scale.
+func TestAStoppingPrimaryWhoseScaleDownWaitsAsksForASwitchover(t *testing.T) {
+	t.Parallel()
+	h := twoInstances(t, "redis")
+	h.api.update(redisResource, testNamespace, h.name, func(object map[string]any) {
+		object["spec"].(map[string]any)["instances"] = 1
+		object["status"].(map[string]any)["instances"] = []any{
+			map[string]any{"name": "cache-0", "role": "primary", "ready": true},
+			map[string]any{"name": "cache-1", "role": "replica", "ready": true},
+		}
+	})
+	stopped := make(chan struct{})
+	go func() {
+		h.stop("cache-0")
+		close(stopped)
+	}()
+
+	h.waitFor("cache-0's pod asks for a switchover", func() bool {
+		var pod Pod
+		return h.api.read(podsResource, testNamespace, "cache-0", &pod) && pod.Metadata.Annotations[switchoverAnnotation] != ""
+	})
+	select {
+	case <-stopped:
+		t.Fatal("cache-0 stopped before it handed its role over")
+	case <-time.After(1500 * time.Millisecond):
+	}
+	h.switchTo("cache-1")
+	<-stopped
+}
+
 // A single instance has no replica to hand its role to, so it stops at
 // once instead of waiting for a switchover that cannot come.
 func TestAStoppingSingleInstanceStopsWithoutWaitingForAHandover(t *testing.T) {

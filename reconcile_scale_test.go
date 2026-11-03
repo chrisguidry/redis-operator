@@ -52,7 +52,7 @@ func TestScalingDownPastThePrimarySwitchesOverBeforeTheStatefulSetShrinks(t *tes
 		want      string
 		during    int
 	}{
-		{"to one instance", "cache-1", 1, map[string]int64{"cache-0": 100, "cache-2": 100}, "cache-0", 2},
+		{"to one instance", "cache-1", 1, map[string]int64{"cache-0": 100, "cache-2": 100}, "cache-0", 3},
 		{"to the most caught-up instance that stays", "cache-2", 2, map[string]int64{"cache-0": 100, "cache-1": 150}, "cache-1", 3},
 	}
 	for _, c := range cases {
@@ -77,6 +77,9 @@ func TestScalingDownPastThePrimarySwitchesOverBeforeTheStatefulSetShrinks(t *tes
 			mustMatch(t, h.replicas(), c.during)
 
 			h.steady(c.want, 3)
+			for i := c.instances; i < 3; i++ {
+				h.scaledAway(instanceName(h.name, i), 100)
+			}
 			h.pass()
 
 			mustMatch(t, h.redis().Status.Switchover == nil, true)
@@ -86,17 +89,59 @@ func TestScalingDownPastThePrimarySwitchesOverBeforeTheStatefulSetShrinks(t *tes
 	}
 }
 
-func TestScalingDownAboveThePrimaryShrinksAtOnce(t *testing.T) {
+// scaledAway sets the report of an instance that a scale-down removes,
+// as its manager detaches it with its data.
+func (h *harness) scaledAway(name string, offset int64) {
+	h.setReport(instanceReport{Name: name, Role: reportDetached, Target: "cache-0", Offset: offset, HasData: true})
+}
+
+// following sets the report of a replica that stays, linked to the
+// primary at offset.
+func (h *harness) following(name, primary string, offset int64) {
+	h.setReport(instanceReport{Name: name, Role: reportReplica, Target: primary, Offset: offset, LinkUp: true, Following: h.ip(primary), HasData: true, Ready: true})
+}
+
+// A replica that a scale-down removes may hold a write confirmed with
+// WAIT that the replicas that stay lack. The StatefulSet shrinks once
+// each such replica has detached, so its offset is final, and every
+// replica that stays has reached it.
+func TestAScaleDownShrinksOnceTheInstancesItRemovesAreBehindTheOnesThatStay(t *testing.T) {
 	t.Parallel()
-	h := startHarness(t, 3)
-	h.steady("cache-0", 3)
-	h.pass()
+	cases := []struct {
+		name      string
+		instances int
+		before    func(h *harness)
+		after     func(h *harness)
+	}{
+		{"to one instance", 1, func(h *harness) {}, func(h *harness) {
+			h.scaledAway("cache-1", 100)
+			h.scaledAway("cache-2", 100)
+		}},
+		{"to two instances", 2, func(h *harness) {
+			h.scaledAway("cache-2", 150)
+			h.following("cache-1", "cache-0", 100)
+		}, func(h *harness) {
+			h.following("cache-1", "cache-0", 150)
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			h := startHarness(t, 3)
+			h.steady("cache-0", 3)
+			h.pass()
 
-	h.setInstances(1)
-	h.pass()
+			h.setInstances(c.instances)
+			c.before(h)
+			h.pass()
+			mustMatch(t, h.replicas(), 3)
 
-	mustMatch(t, h.redis().Status.Switchover == nil, true)
-	mustMatch(t, h.replicas(), 1)
+			c.after(h)
+			h.pass()
+			mustMatch(t, h.redis().Status.Switchover == nil, true)
+			mustMatch(t, h.replicas(), c.instances)
+		})
+	}
 }
 
 func TestTheBudgetOnThePrimaryExistsOnlyWithMoreThanOneInstance(t *testing.T) {
@@ -107,6 +152,8 @@ func TestTheBudgetOnThePrimaryExistsOnlyWithMoreThanOneInstance(t *testing.T) {
 	var budget map[string]any
 
 	h.setInstances(1)
+	h.scaledAway("cache-1", 100)
+	h.scaledAway("cache-2", 100)
 	h.pass()
 	mustMatch(t, h.api.read(budgetsResource, testNamespace, "cache-primary", &budget), false)
 	mustMatch(t, h.api.read(budgetsResource, testNamespace, "cache-replicas", &budget), true)
@@ -220,9 +267,54 @@ func TestAFailoverDuringAScaleDownCanNameAnInstanceTheScaleDownRemoves(t *testin
 	mustMatch(t, h.replicas(), 3)
 
 	h.steady("cache-0", 3)
+	h.scaledAway("cache-1", 100)
+	h.scaledAway("cache-2", 100)
 	h.pass()
 	mustMatch(t, h.redis().Status.Switchover == nil, true)
 	mustMatch(t, h.replicas(), 1)
+}
+
+// A scale-up during a failover would add empty pods, which can never
+// count toward the quorum but would raise it, so the StatefulSet keeps
+// its size until the next primary holds the Lease.
+func TestAScaleUpWaitsWhileAFailoverIsPending(t *testing.T) {
+	t.Parallel()
+	h := startHarness(t, 3)
+	h.failQuorum(3, 1)
+	h.setReport(detached("cache-1", 90))
+	h.silence("cache-2")
+	h.passFor(10*time.Second, 2*time.Second)
+
+	h.setInstances(5)
+	h.passFor(4*time.Second, 2*time.Second)
+
+	mustMatch(t, h.replicas(), 3)
+	mustMatch(t, strings.HasPrefix(findReady(t, h.redis()).Message, "1 of the 2 instances a failover needs"), true)
+}
+
+// The scale as read from the watch can lag behind the scale this
+// operator applied. The smaller of the two is the scale the StatefulSet
+// has or is about to have, so a pass that holds the scale never grows
+// it back to a size the operator already left.
+func TestTheScaleAsReadIsNeverMoreThanTheScaleLastApplied(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		read    int
+		applied int
+		want    int
+	}{
+		{"nothing applied yet", 3, 0, 3},
+		{"the watch has caught up", 1, 1, 1},
+		{"the watch lags a shrink", 3, 1, 1},
+		{"the watch lags a growth", 1, 3, 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			mustMatch(t, scaleAsRead(c.read, c.applied), c.want)
+		})
+	}
 }
 
 // The budgets count the pods the StatefulSet keeps, so a drain during
@@ -239,6 +331,40 @@ func TestTheBudgetsCountThePodsAHeldScaleDownKeeps(t *testing.T) {
 
 	var budget map[string]any
 	h.api.read(budgetsResource, testNamespace, "cache-replicas", &budget)
-	mustMatch(t, budget["spec"].(map[string]any)["minAvailable"], any(float64(1)))
+	mustMatch(t, budget["spec"].(map[string]any)["minAvailable"], any(float64(2)))
 	mustMatch(t, h.api.read(budgetsResource, testNamespace, "cache-primary", &budget), true)
+}
+
+// While no pod carries the primary label, every pod is under the
+// replicas' budget, so it lets one go at a time rather than two.
+func TestTheReplicasBudgetLetsOnePodGoWhileNoneIsPrimary(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		unsettle func(h *harness)
+		want     float64
+	}{
+		{"a primary is labeled", func(h *harness) {
+			h.steady("cache-0", 3)
+			h.pass()
+		}, 1},
+		{"a failover is pending", func(h *harness) {
+			h.failQuorum(3, 1)
+			h.setReport(detached("cache-1", 90))
+			h.silence("cache-2")
+			h.passFor(10*time.Second, 2*time.Second)
+		}, 2},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			h := startHarness(t, 3)
+			c.unsettle(h)
+			h.pass()
+
+			var budget map[string]any
+			h.api.read(budgetsResource, testNamespace, "cache-replicas", &budget)
+			mustMatch(t, budget["spec"].(map[string]any)["minAvailable"], any(c.want))
+		})
+	}
 }

@@ -19,18 +19,66 @@ import "time"
 // writes.
 
 // replicasFor is the StatefulSet's scale: spec.instances, or more while
-// the holder or the target has an ordinal beyond it, and never less
-// than current, the StatefulSet's scale as read, while the primary is
-// not settled.
-func replicasFor(r *Redis, holder string, current int, settled bool) int {
+// the holder or the target has an ordinal beyond it. While the primary
+// is not settled it is current, the StatefulSet's scale as read, in
+// both directions: a scale-down could delete the only copy of a
+// confirmed write, and a scale-up would add empty pods that raise the
+// failover's quorum and can never count toward it. A StatefulSet not
+// yet made takes spec.instances.
+func replicasFor(r *Redis, holder string, current int, settled, shrinkSafe bool) int {
 	n := r.Spec.instances()
+	if (!settled || !shrinkSafe && current > n) && current > 0 {
+		n = current
+	}
 	for _, name := range []string{holder, r.Status.TargetPrimary} {
 		n = max(n, ordinal(name)+1)
 	}
-	if !settled {
-		n = max(n, current)
-	}
 	return n
+}
+
+// shrinkSafe reports whether the StatefulSet may remove the pods beyond
+// spec.instances without losing a write confirmed with WAIT: each of
+// them answered the poll at polled detached, so its offset is final,
+// and each replica that stays answered linked to the holder at an
+// offset at or past theirs. Every write a removed instance acknowledged
+// is then on an instance that stays.
+func shrinkSafe(r *Redis, holder string, pods map[string]Pod, st *redisState, polled time.Time) bool {
+	instances := r.Spec.instances()
+	var removed int64 = -1
+	for name := range pods {
+		if ordinal(name) < instances || name == holder {
+			continue
+		}
+		report, ok := st.fresh(name, polled, 0)
+		if !ok || report.Role != reportDetached {
+			return false
+		}
+		removed = max(removed, report.Offset)
+	}
+	if removed < 0 {
+		return true
+	}
+	for name := range pods {
+		if ordinal(name) >= instances || name == holder {
+			continue
+		}
+		report, ok := st.fresh(name, polled, 0)
+		if !ok || report.Role != reportReplica || !report.LinkUp || report.Following != pods[holder].Status.PodIP || report.Offset < removed {
+			return false
+		}
+	}
+	return true
+}
+
+// scaleAsRead is the StatefulSet's scale: the scale its watch read, or
+// the scale this operator last applied when that is smaller, as when
+// the watch has not yet delivered a shrink. Taking the smaller keeps a
+// held scale from growing the StatefulSet back to a size it left.
+func scaleAsRead(read, applied int) int {
+	if applied == 0 {
+		return read
+	}
+	return min(read, applied)
 }
 
 // primarySettled reports whether an instance holds the Lease and is the
@@ -48,6 +96,12 @@ func primarySettled(target, holder string, pods map[string]Pod, st *redisState, 
 	}
 	report, ok := st.fresh(holder, polled, 0)
 	return ok && report.Role == reportPrimary
+}
+
+// scaleHeld reports whether the StatefulSet keeps a scale other than
+// spec.instances while the primary is not settled.
+func (d *decision) scaleHeld() bool {
+	return d.scale != d.r.Spec.instances() && !d.settled
 }
 
 // scaleDownHeld reports whether the StatefulSet keeps pods beyond

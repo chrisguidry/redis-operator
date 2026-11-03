@@ -141,6 +141,9 @@ type redisState struct {
 	// applied holds the body of each child as last applied, so a steady
 	// pass writes nothing.
 	applied map[string]string
+	// appliedScale is the StatefulSet's scale as this operator last
+	// applied it.
+	appliedScale int
 	// secretData is the connection Secret's data as the operator last
 	// made it agree with the spec, less the password.
 	secretData string
@@ -318,11 +321,11 @@ func (c *controller) state(r *Redis) *redisState {
 // ensureChildren applies each child whose body changed since the
 // operator last applied it, and keeps the Secret. replicas is the
 // StatefulSet's scale (reconcile_scale.go).
-func (c *controller) ensureChildren(ctx context.Context, r *Redis, st *redisState, w *world, replicas int) error {
+func (c *controller) ensureChildren(ctx context.Context, r *Redis, st *redisState, w *world, replicas int, primaryLabeled bool) error {
 	if err := c.ensureSecret(ctx, r, st); err != nil {
 		return err
 	}
-	for _, each := range children(r, c.operatorImage, managerSecrets(r, w), restoreVolume(r, w), replicas) {
+	for _, each := range children(r, c.operatorImage, managerSecrets(r, w), restoreVolume(r, w), replicas, primaryLabeled) {
 		err := c.ensureChild(ctx, r, st, each)
 		if !each.optional {
 			if err != nil {

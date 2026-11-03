@@ -92,7 +92,7 @@ func TestPlaintextLeavesThePodTemplateAlone(t *testing.T) {
 func TestEveryServiceServesTLSBesidePlaintext(t *testing.T) {
 	t.Parallel()
 	r := &Redis{Metadata: ObjectMeta{Name: "cache", Namespace: testNamespace}, Spec: RedisSpec{TLS: &TLSSpec{Secret: "own-tls"}}}
-	for _, each := range children(r, "operator-image", nil, nil, 1) {
+	for _, each := range children(r, "operator-image", nil, nil, 1, false) {
 		if each.resource != servicesResource {
 			continue
 		}

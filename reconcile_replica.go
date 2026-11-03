@@ -37,7 +37,25 @@ func (d *decision) replica(ctx context.Context) {
 		d.measureLag(ctx)
 	case status.Phase == replicaPromoting:
 		d.finishPromotion(ctx)
+	case status.Phase == replicaPromoted:
+		d.confirmPromotion()
 	}
+}
+
+// confirmPromotion turns Adopted True once the holder answers as a
+// writable primary. The phase tells the holder's manager to stop
+// following the source, which it does on its next step, so until then
+// a client that moved to the Redis would find it refusing writes.
+func (d *decision) confirmPromotion() {
+	adopted, _ := findCondition(d.status.Conditions, "Adopted")
+	if adopted.Status == ConditionTrue {
+		return
+	}
+	report, ok := d.st.fresh(d.holder, d.now, 2*d.c.timings.backstop)
+	if !ok || report.Role != reportPrimary || !report.Ready {
+		return
+	}
+	d.setCondition("Adopted", ConditionTrue, "Promoted", fmt.Sprintf("%s takes writes as the primary", d.holder))
 }
 
 // errPasswordUnreadable marks a failure to read the source's password
@@ -200,5 +218,5 @@ func (d *decision) promote(message string) {
 		d.status.Replica = &ReplicaStatus{}
 	}
 	d.status.Replica.Phase = replicaPromoted
-	d.setCondition("Adopted", ConditionTrue, "Promoted", message)
+	d.setCondition("Adopted", ConditionFalse, "TakingWrites", message+"; the holder takes writes on its next step")
 }

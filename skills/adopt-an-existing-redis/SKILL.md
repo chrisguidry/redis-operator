@@ -157,8 +157,12 @@ The operator:
    accepts no write while the new `Redis` catches up, and writes
    `phase: Promoting`.
 2. Waits until the holder's offset reaches the source's.
-3. Writes `phase: Promoted`. The holder becomes the primary and goes
-   back to its own password for replication.
+3. Writes `phase: Promoted`, and the condition `Adopted` `False` with
+   the reason `TakingWrites`. On its next step the holder stops
+   following the source, becomes the primary, and goes back to its own
+   password for replication.
+4. Sets `Adopted` `True` once the holder answers as a writable
+   primary.
 
 The pause on the source ends by itself after 30 seconds.
 
@@ -171,8 +175,11 @@ Success is `phase: Promoted` and the condition `Adopted` `True` with
 the reason `Promoted` and the message:
 
 ```text
-the holder reached the source's offset <N> with its writes paused
+cache-0 takes writes as the primary
 ```
+
+Wait for `Adopted` `True`, not only the phase: until then the holder
+may still answer writes with `READONLY`.
 
 ## 5. Move the clients
 

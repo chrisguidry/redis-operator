@@ -294,7 +294,9 @@ func TestTheReplicaBudgetKeepsAllButOneReplica(t *testing.T) {
 		t.Run(strconv.Itoa(c.instances), func(t *testing.T) {
 			t.Parallel()
 			h := startHarness(t, c.instances)
+			h.steady("cache-0", c.instances)
 
+			h.pass()
 			h.pass()
 
 			var budget map[string]any

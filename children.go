@@ -58,7 +58,7 @@ func secretName(redis string) string { return redis + "-app" }
 // children lists every object for r except its Secret, which the
 // operator creates once and never rewrites, because it holds the
 // password. replicas is the StatefulSet's scale (reconcile_scale.go).
-func children(r *Redis, operatorImage string, secrets []string, restore *BackupVolume, replicas int) []child {
+func children(r *Redis, operatorImage string, secrets []string, restore *BackupVolume, replicas int, primaryLabeled bool) []child {
 	name := r.Metadata.Name
 	rules := []map[string]any{
 		{"apiGroups": []string{apiGroup}, "resources": []string{"redis"}, "resourceNames": []string{name}, "verbs": []string{"get"}},
@@ -101,9 +101,11 @@ func children(r *Redis, operatorImage string, secrets []string, restore *BackupV
 			// maxUnavailable budget against the StatefulSet's whole
 			// scale, primary included, and would allow no eviction. It
 			// counts the StatefulSet's scale and not spec.instances, so a
-			// scale-down that waits keeps the pods it waits for.
+			// scale-down that waits keeps the pods it waits for. While no
+			// pod carries the primary label, as during a failover, every
+			// pod is under this budget, and it still lets only one go.
 			"spec": map[string]any{
-				"minAvailable": max(replicas-2, 0),
+				"minAvailable": max(replicas-replicaBudgetSlack(primaryLabeled), 0),
 				"selector":     map[string]any{"matchLabels": map[string]string{clusterLabel: name, roleLabel: roleReplica}},
 			},
 		}},
@@ -330,4 +332,24 @@ func secretData(r *Redis, password string) map[string]string {
 		data["port"], data["uri"], data["ro-uri"] = data["tls-port"], data["tls-uri"], data["tls-ro-uri"]
 	}
 	return data
+}
+
+// replicaBudgetSlack is how many pods fewer than the StatefulSet's scale
+// the replicas' budget keeps: the primary, which another budget covers,
+// and the one replica a drain may take.
+func replicaBudgetSlack(primaryLabeled bool) int {
+	if primaryLabeled {
+		return 2
+	}
+	return 1
+}
+
+// primaryLabeled reports whether any of pods carries the primary label.
+func primaryLabeled(pods []Pod) bool {
+	for _, pod := range pods {
+		if pod.Metadata.Labels[roleLabel] == rolePrimary {
+			return true
+		}
+	}
+	return false
 }
