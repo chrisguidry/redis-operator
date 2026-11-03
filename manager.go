@@ -56,8 +56,10 @@ const (
 	// after that (manager_demote.go).
 	demotionHold = 30 * time.Second
 	routeSettle  = 5 * time.Second
-	statusPort   = 9123
-	serverPort   = 6379
+	// fullSyncDelay is the servers' own default.
+	fullSyncDelay = 5 * time.Second
+	statusPort    = 9123
+	serverPort    = 6379
 )
 
 var podsResource = kubeResource{"", "v1", "pods"}
@@ -94,6 +96,7 @@ type managerConfig struct {
 	demotionHold    time.Duration
 	routeSettle     time.Duration
 	pauseGap        time.Duration
+	fullSyncDelay   time.Duration
 
 	// clock is the time the manager's deadlines are measured on: the
 	// Lease's expiry, the handover wait, and the demotion hold. Nil is
@@ -341,6 +344,7 @@ func (m *manager) settings(redis Redis) (serverSettings, error) {
 		maxmemoryPolicy:    redis.Spec.maxmemoryPolicy(),
 		persistent:         redis.Spec.persistent(),
 		minReplicasToWrite: redis.Spec.minReplicasToWrite(),
+		fullSyncDelay:      m.config.fullSyncDelay,
 	}, nil
 }
 

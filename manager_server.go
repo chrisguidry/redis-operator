@@ -44,6 +44,10 @@ type serverSettings struct {
 	maxmemoryPolicy    string
 	persistent         bool
 	minReplicasToWrite int
+	// fullSyncDelay is how long the primary waits after a replica asks
+	// for a full sync before it starts one, so replicas that ask close
+	// together share one transfer.
+	fullSyncDelay time.Duration
 	// restoredSnapshot starts the server with its append-only file off,
 	// so it loads the snapshot in its data directory.
 	restoredSnapshot bool
@@ -90,6 +94,7 @@ func (s serverSettings) config() string {
 		"replica-read-only yes",
 		fmt.Sprintf("min-replicas-to-write %d", s.minReplicasToWrite),
 		fmt.Sprintf("min-replicas-max-lag %d", minReplicasMaxLag),
+		fmt.Sprintf("repl-diskless-sync-delay %d", int(s.fullSyncDelay/time.Second)),
 		fmt.Sprintf("replicaof %s %d", detachedHost, s.port),
 	}
 	if s.tls != nil {

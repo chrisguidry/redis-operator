@@ -53,6 +53,9 @@ func startTestServer(t *testing.T, engine string, extra ...string) *testServer {
 		"masterauth " + testPassword,
 		"save \"\"",
 		"appendonly no",
+		// A primary starts a full sync at once instead of waiting for
+		// more replicas to ask.
+		"repl-diskless-sync-delay 0",
 	}, extra...), "\n") + "\n"
 	path := filepath.Join(dir, "server.conf")
 	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {

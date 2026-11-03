@@ -153,6 +153,7 @@ func runManager(ctx context.Context, getenv func(string) string, log io.Writer) 
 		demotionHold:    demotionHold,
 		routeSettle:     routeSettle,
 		pauseGap:        pauseGap,
+		fullSyncDelay:   fullSyncDelay,
 	}
 	for name, value := range map[string]string{
 		"POD_NAMESPACE": config.namespace, "REDIS_NAME": config.redisName, "POD_NAME": config.podName,
