@@ -20,16 +20,19 @@ start_cluster() {
   mkdir -p "$WORKDIR/backups"
   # The instance managers run as another user than this script.
   chmod 777 "$WORKDIR/backups"
-  # A k3s agent that starts while the server is still coming up can
-  # lose its connection through its load balancer as the balancer moves
-  # from the server's name to its address, and it shuts down. The
-  # restart policy starts it again, and it joins.
-  docker run -d --name "$SERVER" --hostname "$SERVER" --network "$NETWORK" --privileged --restart unless-stopped \
+  docker run -d --name "$SERVER" --hostname "$SERVER" --network "$NETWORK" --privileged \
     -v "$WORKDIR/backups:$BACKUP_VOLUME_PATH" -p 127.0.0.1::6443 -e K3S_TOKEN="$RUN_ID" \
     "$K3S_IMAGE" server --disable=traefik,metrics-server --tls-san 127.0.0.1 >/dev/null
+  # Each agent's load balancer starts on the URL it is given and moves
+  # to the address the server publishes for itself, closing every
+  # connection open through it. An agent whose node update is cut off
+  # that way shuts down, so the agents are given that address to begin
+  # with.
+  local address
+  address=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$NETWORK\").IPAddress}}" "$SERVER")
   for i in $(seq 1 "$AGENTS"); do
-    docker run -d --name "$SERVER-agent-$i" --hostname "$SERVER-agent-$i" --network "$NETWORK" --privileged --restart unless-stopped \
-      -v "$WORKDIR/backups:$BACKUP_VOLUME_PATH" -e K3S_TOKEN="$RUN_ID" -e K3S_URL="https://$SERVER:6443" \
+    docker run -d --name "$SERVER-agent-$i" --hostname "$SERVER-agent-$i" --network "$NETWORK" --privileged \
+      -v "$WORKDIR/backups:$BACKUP_VOLUME_PATH" -e K3S_TOKEN="$RUN_ID" -e K3S_URL="https://$address:6443" \
       "$K3S_IMAGE" agent >/dev/null
   done
   retry "k3s's kubeconfig appearing" 90 docker exec "$SERVER" test -s /etc/rancher/k3s/k3s.yaml
