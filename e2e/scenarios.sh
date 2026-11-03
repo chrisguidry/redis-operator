@@ -224,6 +224,30 @@ scenario_scale_during_failover() {
   assert_no_confirmed_write_lost "scaling back to three instances"
 }
 
+# scenario_scale_while_the_primary_dies force-deletes the primary cache-0
+# and lowers instances to one at once, before its Lease expires. cache-0
+# comes back with no data, so the replicas the scale-down would remove
+# hold the only copies of the confirmed writes, and the StatefulSet must
+# keep them until the failover names one of them primary.
+scenario_scale_while_the_primary_dies() {
+  [ "$(primary)" = cache-0 ] || die "this scenario needs cache-0 as primary, not $(primary)"
+  log "scenario: force-delete the primary cache-0 and scale to one instance at once"
+  kubectl -n "$NS" delete pod cache-0 --grace-period=0 --force >/dev/null 2>&1
+  kubectl -n "$NS" patch redis cache --type=merge -p '{"spec":{"instances":1}}' >/dev/null
+  retry "Ready saying the scale-down waits" 10 ready_message_has "The StatefulSet keeps its 3 pods"
+  statefulset_replicas_are 3 || die "the StatefulSet shrank while the primary was dead"
+  retry "a failover from cache-0" 60 primary_is_not cache-0
+  retry "the primary moving back to cache-0" 180 primary_is cache-0
+  retry "one pod left" 120 pod_count_is 1
+  wait_ready 180
+  assert_counter_kept "scaling to one instance while the primary died"
+
+  log "scenario: scale back to three instances"
+  kubectl -n "$NS" patch redis cache --type=merge -p '{"spec":{"instances":3}}' >/dev/null
+  wait_ready 180
+  assert_no_confirmed_write_lost "scaling back to three instances"
+}
+
 target_is() {
   local now
   now=$(kubectl -n "$NS" get redis cache -o jsonpath='{.status.targetPrimary}')

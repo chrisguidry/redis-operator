@@ -51,6 +51,11 @@ failover can reach the writes they hold. Read the reason for what the
 `Redis` waits on; once the next primary holds the Lease, the scale-down
 goes on by itself.
 
+A `ScalingDown` message that says the holder's `pod is not ready or its
+manager did not answer as primary` means the instance that holds the
+Lease may have died, and the pods stay until it answers again or a
+failover names the next primary.
+
 ## Events
 
 The operator posts an Event for each condition transition and each

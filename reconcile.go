@@ -430,8 +430,9 @@ func newPassword() string {
 	return hex.EncodeToString(bytes)
 }
 
-// poll reads every instance manager's /status at once.
-func (c *controller) poll(ctx context.Context, st *redisState, pods []Pod) {
+// poll reads every instance manager's /status at once, and returns the
+// time it records for the managers that answered.
+func (c *controller) poll(ctx context.Context, st *redisState, pods []Pod) time.Time {
 	now := c.now()
 	if st.firstPoll.IsZero() {
 		st.firstPoll = now
@@ -462,6 +463,7 @@ func (c *controller) poll(ctx context.Context, st *redisState, pods []Pod) {
 		st.lastSeen[a.name] = now
 		st.reports[a.name] = a.report
 	}
+	return now
 }
 
 // silentFor is how long the manager of name has not answered.

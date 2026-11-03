@@ -419,7 +419,9 @@ the data from the primary. Scaling to one instance removes the
 `cache-primary` PodDisruptionBudget, so a drain can evict the only pod.
 
 The StatefulSet does not shrink while a failover is pending, while no
-instance holds the Lease, or while a switchover is moving the primary,
+instance holds the Lease, while the holder's pod is not ready or its
+manager does not answer as primary, or while a switchover is moving the
+primary,
 because one of the pods a scale-down removes may hold a write a client
 confirmed with `WAIT`. The failover can still name any of those pods.
 Once the next primary holds the Lease, the scale-down goes on as above,

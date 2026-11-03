@@ -32,17 +32,18 @@ func (c *controller) reconcile(ctx context.Context, r *Redis, w *world) error {
 	st := c.state(r)
 	key := objectKey(r.Metadata)
 	holder := w.leases[r.Metadata.Namespace+"/"+primaryLeaseName(r.Metadata.Name)].Spec.HolderIdentity
-	scale := replicasFor(r, holder, w.statefulSets[key].Spec.Replicas)
-	if err := c.ensureChildren(ctx, r, st, w, scale); err != nil {
-		return err
-	}
 	pods := w.pods[key]
 	slices.SortFunc(pods, func(a, b Pod) int { return ordinal(a.Metadata.Name) - ordinal(b.Metadata.Name) })
 	byName := map[string]Pod{}
 	for _, pod := range pods {
 		byName[pod.Metadata.Name] = pod
 	}
-	c.poll(ctx, st, pods)
+	polled := c.poll(ctx, st, pods)
+	settled := primarySettled(r.Status.TargetPrimary, holder, byName, st, polled)
+	scale := replicasFor(r, holder, w.statefulSets[key].Spec.Replicas, settled)
+	if err := c.ensureChildren(ctx, r, st, w, scale); err != nil {
+		return err
+	}
 	now := c.now()
 
 	status := r.Status
@@ -68,7 +69,7 @@ func (c *controller) reconcile(ctx context.Context, r *Redis, w *world) error {
 		st.leaderlessSince = now
 	}
 
-	d := decision{c: c, r: r, st: st, status: &status, pods: byName, holder: holder, now: now, nodes: w.nodes, scale: scale}
+	d := decision{c: c, r: r, st: st, status: &status, pods: byName, holder: holder, now: now, nodes: w.nodes, scale: scale, settled: settled}
 	d.replica(ctx)
 	// A single instance fails over too, to itself: when it restarts with
 	// no data, only a failover starts the empty dataset it must serve.
@@ -112,6 +113,8 @@ type decision struct {
 	now    time.Time
 	// scale is the StatefulSet's scale this pass applied.
 	scale int
+	// settled is primarySettled for this pass.
+	settled bool
 	// notes are the Events of this pass's decisions, which the pass
 	// posts once the status lands.
 	notes []eventNote
@@ -461,10 +464,13 @@ func (d *decision) summarize(pods []Pod) {
 		reason, message = "SwitchoverInProgress", fmt.Sprintf("moving the primary from %s to %s", d.status.Switchover.From, d.status.Switchover.To)
 	case ready < want:
 		status, reason, message = ConditionFalse, "InstancesNotReady", fmt.Sprintf("%d of %d instances are ready", ready, want)
+	case d.scaleDownHeld():
+		reason, message = "ScalingDown", fmt.Sprintf("%s holds the primary lease, but its pod is not ready or its manager did not answer as primary. "+
+			"The StatefulSet keeps its %d pods until it answers, then scales down to %d", d.holder, d.scale, want)
 	case len(pods) > want:
 		reason, message = "ScalingDown", fmt.Sprintf("%s is primary, and the instances beyond %d are being removed", d.holder, want)
 	}
-	if d.scaleDownHeld() {
+	if d.scaleDownHeld() && reason != "ScalingDown" {
 		message += fmt.Sprintf(". The StatefulSet keeps its %d pods until the next primary holds the lease, then scales down to %d", d.scale, want)
 	}
 	d.setCondition(readyCondition, status, reason, message)

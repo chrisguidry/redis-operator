@@ -133,18 +133,19 @@ func TestAScaleDownWaitsWhileThePrimaryIsNotSettled(t *testing.T) {
 		name     string
 		unsettle func(h *harness)
 		reason   string
+		message  string
 	}{
 		{"a failover is pending", func(h *harness) {
 			h.failQuorum(3, 1)
 			h.setReport(detached("cache-1", 90))
 			h.silence("cache-2")
 			h.passFor(10*time.Second, 2*time.Second)
-		}, "QuorumNotReached"},
+		}, "QuorumNotReached", "The StatefulSet keeps its 3 pods until the next primary holds the lease, then scales down to 1"},
 		{"no instance holds the lease", func(h *harness) {
 			h.steady("cache-0", 3)
 			h.pass()
 			h.holdLease("")
-		}, "NoPrimary"},
+		}, "NoPrimary", "The StatefulSet keeps its 3 pods until the next primary holds the lease, then scales down to 1"},
 		{"a switchover is in flight", func(h *harness) {
 			h.steady("cache-0", 3)
 			h.pass()
@@ -153,7 +154,20 @@ func TestAScaleDownWaitsWhileThePrimaryIsNotSettled(t *testing.T) {
 			})
 			h.pass()
 			mustMatch(t, h.redis().Status.Switchover != nil, true)
-		}, "SwitchoverInProgress"},
+		}, "SwitchoverInProgress", "The StatefulSet keeps its 3 pods until the next primary holds the lease, then scales down to 1"},
+		{"the primary restarted before its lease expired", func(h *harness) {
+			h.steady("cache-0", 3)
+			h.pass()
+			h.editPod("cache-0", func(object map[string]any) {
+				object["status"].(map[string]any)["conditions"] = []any{map[string]any{"type": "Ready", "status": "False"}}
+			})
+			h.setReport(instanceReport{Name: "cache-0", Role: reportReplica})
+		}, "ScalingDown", "The StatefulSet keeps its 3 pods until it answers, then scales down to 1"},
+		{"the primary's manager stopped answering", func(h *harness) {
+			h.steady("cache-0", 3)
+			h.pass()
+			h.silence("cache-0")
+		}, "ScalingDown", "The StatefulSet keeps its 3 pods until it answers, then scales down to 1"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -166,7 +180,7 @@ func TestAScaleDownWaitsWhileThePrimaryIsNotSettled(t *testing.T) {
 			mustMatch(t, h.replicas(), 3)
 			ready := findReady(t, h.redis())
 			mustMatch(t, ready.Reason, c.reason)
-			mustMatch(t, strings.HasSuffix(ready.Message, "The StatefulSet keeps its 3 pods until the next primary holds the lease, then scales down to 1"), true)
+			mustMatch(t, strings.HasSuffix(ready.Message, c.message), true)
 		})
 	}
 }

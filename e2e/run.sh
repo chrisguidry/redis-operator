@@ -16,7 +16,7 @@ ENGINE=${ENGINE:-redis}
 NS=e2e
 # SCENARIOS names the scenarios to run, in order, such as
 # SCENARIOS=adoption to run one of them alone.
-SCENARIOS=${SCENARIOS:-delete_primary drain_primary_node operator_down freeze_primary partition_primary partition_primary_from_peers metrics acl_users tls backup_restore backup_restore_volume adoption rollout scale scale_during_failover single_instance upgrade broken_image}
+SCENARIOS=${SCENARIOS:-delete_primary drain_primary_node operator_down freeze_primary partition_primary partition_primary_from_peers metrics acl_users tls backup_restore backup_restore_volume adoption rollout scale scale_during_failover scale_while_the_primary_dies single_instance upgrade broken_image}
 
 # shellcheck source=common.sh disable=SC1091
 source "$E2E_DIR/common.sh"
