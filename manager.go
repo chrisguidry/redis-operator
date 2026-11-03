@@ -94,6 +94,20 @@ type managerConfig struct {
 	demotionHold    time.Duration
 	routeSettle     time.Duration
 	pauseGap        time.Duration
+
+	// clock is the time the manager's deadlines are measured on: the
+	// Lease's expiry, the handover wait, and the demotion hold. Nil is
+	// the wall clock. The pause watch always measures the wall clock,
+	// since a pause is a gap in real time.
+	clock func() time.Time
+}
+
+// now reads the clock the manager's deadlines are measured on.
+func (m *manager) now() time.Time {
+	if m.config.clock == nil {
+		return time.Now()
+	}
+	return m.config.clock()
 }
 
 // instanceReport is what an instance manager says about itself at
@@ -267,7 +281,7 @@ func (m *manager) run(stop context.Context) error {
 			return fmt.Errorf("%s exited: %v", serverBinary(redis.Spec.engine()), err)
 		case <-stop.Done():
 			if !m.stopping {
-				m.stopping, m.stopStarted = true, time.Now()
+				m.stopping, m.stopStarted = true, m.now()
 				m.say(m.config.podName + ": stopping")
 			}
 		case <-ticker.C:
@@ -291,7 +305,7 @@ func (m *manager) run(stop context.Context) error {
 // other can take the role, or it waited as long as it may for the
 // operator to name the next one.
 func (m *manager) readyToStop() bool {
-	return !m.lease.held() || m.instances == 1 || time.Since(m.stopStarted) > m.config.handoverWait
+	return !m.lease.held() || m.instances == 1 || m.now().Sub(m.stopStarted) > m.config.handoverWait
 }
 
 func (m *manager) readRedisUntilAnswered(ctx context.Context) (Redis, error) {
@@ -371,7 +385,7 @@ func (m *manager) releaseLeaseIfEmpty(ctx context.Context) error {
 	if m.hasData {
 		return nil
 	}
-	now := time.Now()
+	now := m.now()
 	if err := m.lease.read(ctx, now); err != nil {
 		return fmt.Errorf("reading the primary lease: %w", err)
 	}
@@ -385,11 +399,14 @@ func (m *manager) releaseLeaseIfEmpty(ctx context.Context) error {
 // step reads the decision and the Lease, and makes the server's role
 // agree with them.
 func (m *manager) step(ctx context.Context) {
-	now := time.Now()
+	// The report's time is on the wall clock, the clock the pause
+	// watch's beats are on.
+	started := time.Now()
+	now := m.now()
 	apiErr := m.readDecision(ctx, now)
 	info, err := m.server.replication(ctx)
 	if err != nil {
-		m.setReport(instanceReport{Name: m.config.podName, Role: reportStarting, Error: errorText(err)}, now)
+		m.setReport(instanceReport{Name: m.config.podName, Role: reportStarting, Error: errorText(err)}, started)
 		return
 	}
 	if info.role == "slave" && info.linkUp && info.masterHost != detachedHost {
@@ -424,7 +441,7 @@ func (m *manager) step(ctx context.Context) {
 	if after, err := m.server.replication(ctx); err == nil {
 		info = after
 	}
-	m.setReport(m.reportFrom(info, actErr), now)
+	m.setReport(m.reportFrom(info, actErr), started)
 }
 
 func (m *manager) readDecision(ctx context.Context, now time.Time) error {
@@ -564,7 +581,7 @@ func (m *manager) handOver(ctx context.Context, now time.Time, info replicationI
 	if !handed {
 		return nil
 	}
-	return m.lease.release(ctx, time.Now())
+	return m.lease.release(ctx, m.now())
 }
 
 // askForHandover marks this pod, so the operator switches over before

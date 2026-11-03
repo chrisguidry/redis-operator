@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -94,33 +95,42 @@ func (s *testServer) client(t *testing.T) *redisConn {
 	return c
 }
 
-// handedOut holds every port freePort returned. The kernel can hand a
-// port it just freed to the next request, so two calls in a row, such
-// as the ports of one SeaweedFS server, could otherwise get the same
-// port, and the second listener fails.
+// handedOut is the next port takePort tries. The ports come from below
+// the kernel's ephemeral range, which starts at 32768 by default: the
+// kernel gives the client end of every connection a port from that
+// range, so a port taken from it can already be the client end of a
+// connection on the address a test binds, and the test's listener
+// fails. Counting up also never returns a port twice.
 var handedOut = struct {
 	sync.Mutex
-	ports map[int]bool
-}{ports: map[int]bool{}}
+	next int
+}{next: 20000}
 
 // freePort returns a port nothing listens on, and that no earlier call
 // in this process returned.
 func freePort(t *testing.T) int {
 	t.Helper()
+	port, err := takePort()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return port
+}
+
+// takePort is freePort for a caller outside any one test.
+func takePort() (int, error) {
 	handedOut.Lock()
 	defer handedOut.Unlock()
-	for {
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
+	for ; handedOut.next < 32768; handedOut.next++ {
+		listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", handedOut.next))
 		if err != nil {
-			t.Fatal(err)
+			continue
 		}
-		port := listener.Addr().(*net.TCPAddr).Port
 		_ = listener.Close()
-		if !handedOut.ports[port] {
-			handedOut.ports[port] = true
-			return port
-		}
+		handedOut.next++
+		return handedOut.next - 1, nil
 	}
+	return 0, errors.New("no free port is left below the ephemeral range")
 }
 
 // hostPort turns "127.0.0.1:6379" into "127.0.0.1 6379", the form that

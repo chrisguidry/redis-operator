@@ -127,6 +127,6 @@ func (m *manager) pauseLimit() time.Duration {
 // replica answers every write with READONLY, so the server stays a
 // paused primary until no client can reach it through the Service.
 func (m *manager) demote(ctx context.Context, info replicationInfo, change func() error) error {
-	_, err := m.stepDown(ctx, time.Now(), info, change)
+	_, err := m.stepDown(ctx, m.now(), info, change)
 	return err
 }

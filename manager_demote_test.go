@@ -147,7 +147,7 @@ func TestAFencedPrimaryThatCannotReadItsLabelDisconnectsItsClients(t *testing.T)
 
 			h.crash("cache-1")
 			h.outage()
-			h.waitFor("cache-0 detaches", func() bool { return h.report("cache-0").Role == reportDetached })
+			h.fastForward("cache-0", "cache-0 detaches", time.Second, func() bool { return h.report("cache-0").Role == reportDetached })
 
 			_, err := conn.do(context.Background(), "PING")
 			mustBeDisconnected(t, err)
@@ -231,7 +231,7 @@ func TestADemotedInstanceThatIsPrimaryAgainAcceptsWrites(t *testing.T) {
 	h := twoInstances(t, "redis")
 	h.labelRole("cache-0", rolePrimary)
 	h.setTarget(targetPending)
-	h.waitFor("cache-0 steps down", func() bool { return h.report("cache-0").Role == reportDetached && h.holder() == "" })
+	h.fastForward("cache-0", "cache-0 steps down", time.Second, func() bool { return h.report("cache-0").Role == reportDetached && h.holder() == "" })
 
 	h.setTarget("cache-0")
 	h.waitFor("cache-0 holds the lease as a ready primary", func() bool {
@@ -285,7 +285,7 @@ func TestAHolderThatAFailoverPassedOverDetachesAndReleasesTheLease(t *testing.T)
 	h.setTarget("cache-1")
 	h.labelRole("cache-0", roleReplica)
 
-	h.waitFor("cache-1 holds the lease as a ready primary", func() bool {
+	h.fastForward("cache-0", "cache-1 holds the lease as a ready primary", time.Second, func() bool {
 		return h.holder() == "cache-1" && h.report("cache-1").Ready
 	})
 }

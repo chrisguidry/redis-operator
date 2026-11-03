@@ -11,14 +11,14 @@ import (
 // withBackupStore names a store in the Redis's spec.backup, with its
 // credentials Secret. endpoint is a real store, or any URL when the
 // test never reaches it.
-func (h *harness) withBackupStore(endpoint, retention string) BackupStore {
+func (h *harness) withBackupStore(endpoint, bucket, retention string) BackupStore {
 	h.t.Helper()
 	h.api.create(secretsResource, map[string]any{
 		"apiVersion": "v1", "kind": "Secret",
 		"metadata": map[string]any{"name": "store", "namespace": testNamespace},
 		"data":     map[string]any{accessKeyIDKey: []byte(testAccessKey), secretAccessKeyKey: []byte(testSecretKey)},
 	})
-	store := BackupStore{Destination: "s3://" + testBucket + "/redis", Endpoint: endpoint, Credentials: SecretRef{Secret: "store"}, Retention: retention}
+	store := BackupStore{Destination: "s3://" + bucket + "/redis", Endpoint: endpoint, Credentials: SecretRef{Secret: "store"}, Retention: retention}
 	h.api.update(redisResource, testNamespace, h.name, func(object map[string]any) {
 		object["spec"].(map[string]any)["backup"] = toObject(h.t, store)
 	})
@@ -43,7 +43,7 @@ func TestABackupStartsOnTheReplicaWithTheMostData(t *testing.T) {
 	t.Parallel()
 	h := startHarness(t, 3)
 	h.steady("cache-0", 3)
-	h.withBackupStore("https://s3.example.com", "")
+	h.withBackupStore("https://s3.example.com", testBucket, "")
 	h.setReport(instanceReport{Name: "cache-2", Role: reportReplica, Offset: 150, LinkUp: true, Following: h.ip("cache-0"), HasData: true, Ready: true})
 	h.newBackup("nightly")
 
@@ -131,7 +131,7 @@ func TestABackupOfASingleInstanceRunsOnThePrimary(t *testing.T) {
 	t.Parallel()
 	h := startHarness(t, 1)
 	h.steady("cache-0", 1)
-	h.withBackupStore("https://s3.example.com", "")
+	h.withBackupStore("https://s3.example.com", testBucket, "")
 	h.newBackup("nightly")
 
 	h.pass()
@@ -158,7 +158,7 @@ func TestABackupThatRunsTooLongFails(t *testing.T) {
 	t.Parallel()
 	h := startHarness(t, 1)
 	h.steady("cache-0", 1)
-	h.withBackupStore("https://s3.example.com", "")
+	h.withBackupStore("https://s3.example.com", testBucket, "")
 	h.newBackup("nightly")
 	h.pass()
 	h.pass()
@@ -174,7 +174,7 @@ func TestABackupThatRunsTooLongFails(t *testing.T) {
 func (h *harness) runningBackup(name string) {
 	h.t.Helper()
 	h.steady("cache-0", 2)
-	h.withBackupStore("https://s3.example.com", "")
+	h.withBackupStore("https://s3.example.com", testBucket, "")
 	h.newBackup(name)
 	h.pass()
 	h.pass()
@@ -249,8 +249,8 @@ func TestRetentionDeletesOldBackupsButKeepsTheNewest(t *testing.T) {
 	t.Parallel()
 	h := startHarness(t, 1)
 	h.steady("cache-0", 1)
-	endpoint := startTestStore(t)
-	store := h.withBackupStore(endpoint, "1d")
+	s3 := startTestStore(t)
+	store := h.withBackupStore(s3.endpoint, s3.bucket, "1d")
 	now := h.clock.now()
 	h.completedBackup("old", now.Add(-72*time.Hour), store)
 	h.completedBackup("older", now.Add(-96*time.Hour), store)
@@ -267,7 +267,7 @@ func TestRetentionKeepsTheNewestBackupHoweverOld(t *testing.T) {
 	t.Parallel()
 	h := startHarness(t, 1)
 	h.steady("cache-0", 1)
-	store := h.withBackupStore("https://s3.example.com", "1d")
+	store := h.withBackupStore("https://s3.example.com", testBucket, "1d")
 	h.completedBackup("only", h.clock.now().Add(-30*24*time.Hour), store)
 
 	h.pass()
@@ -279,9 +279,9 @@ func TestDeletingABackupDeletesItsObject(t *testing.T) {
 	t.Parallel()
 	h := startHarness(t, 1)
 	h.steady("cache-0", 1)
-	endpoint := startTestStore(t)
-	store := h.withBackupStore(endpoint, "")
-	s3 := testStore(t, endpoint, store.Destination)
+	bucket := startTestStore(t)
+	store := h.withBackupStore(bucket.endpoint, bucket.bucket, "")
+	s3 := testStore(t, bucket.endpoint, store.Destination)
 	mustSucceed(t, s3.put(context.Background(), "example/cache/gone.rdb", strings.NewReader("REDIS"), 5))
 	h.completedBackup("gone", h.clock.now(), store)
 	h.pass()

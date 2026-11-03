@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -35,9 +36,31 @@ type managerHarness struct {
 
 type runningManager struct {
 	manager *manager
+	clock   *skippableClock
 	stop    context.CancelFunc
 	done    chan error
 	dir     string
+}
+
+// skippableClock is the wall clock plus an offset that a test moves
+// forward, so a manager's deadline passes without the test waiting it
+// out. Each manager has its own: a skip on the clock of the instance
+// that holds the Lease would make it miss its renewals.
+type skippableClock struct {
+	mutex  sync.Mutex
+	offset time.Duration
+}
+
+func (c *skippableClock) now() time.Time {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	return time.Now().Add(c.offset)
+}
+
+func (c *skippableClock) skip(d time.Duration) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	c.offset += d
 }
 
 func startManagerHarness(t *testing.T, engine string, instances int) *managerHarness {
@@ -122,6 +145,7 @@ func (h *managerHarness) start(name, dir string) {
 	if dir == "" {
 		dir = h.t.TempDir()
 	}
+	clock := &skippableClock{}
 	m := newManager(managerConfig{
 		namespace: testNamespace, redisName: h.name, podName: name, podIP: h.ip(name),
 		port: h.port, statusPort: h.statusAt, dataDir: dir,
@@ -132,12 +156,59 @@ func (h *managerHarness) start(name, dir string) {
 		retryPeriod: 200 * time.Millisecond, stepPeriod: 100 * time.Millisecond,
 		failoverTimeout: 3 * time.Second, handoverWait: 3 * time.Second,
 		demotionHold: 5 * time.Second, routeSettle: 500 * time.Millisecond, pauseGap: time.Second,
+		clock: clock.now,
 	}, h.api.client, &syncBuffer{})
 	stop, cancel := context.WithCancel(context.Background())
-	running := &runningManager{manager: m, stop: cancel, done: make(chan error, 1), dir: dir}
+	running := &runningManager{manager: m, clock: clock, stop: cancel, done: make(chan error, 1), dir: dir}
 	go func() { running.done <- m.run(stop) }()
 	h.instances[name] = running
-	h.t.Cleanup(func() { h.stop(name) })
+	h.t.Cleanup(func() { h.stopWithoutHandover(name) })
+}
+
+// skip moves the clock of the manager of name forward by d.
+func (h *managerHarness) skip(name string, d time.Duration) {
+	h.instances[name].clock.skip(d)
+}
+
+// fastForward waits until done, as waitFor does, and moves the clock of
+// the manager of name ahead by stride at each of its steps, so its
+// deadlines pass at that pace. Only that manager's clock moves, so it
+// suits an instance that has lost the Lease or is losing it.
+func (h *managerHarness) fastForward(name, what string, stride time.Duration, done func() bool) {
+	h.t.Helper()
+	running := h.instances[name]
+	deadline := time.Now().Add(20 * time.Second)
+	for !done() {
+		if time.Now().After(deadline) {
+			h.t.Fatalf("timed out waiting until %s", what)
+		}
+		running.clock.skip(stride)
+		time.Sleep(running.manager.config.stepPeriod)
+	}
+}
+
+// stopWithoutHandover stops the manager of name as stop does, and moves
+// its clock past the handover wait at each step until it exits, for a
+// test that does not exercise the handover.
+func (h *managerHarness) stopWithoutHandover(name string) {
+	running, ok := h.instances[name]
+	if !ok {
+		return
+	}
+	delete(h.instances, name)
+	running.stop()
+	deadline := time.After(15 * time.Second)
+	for {
+		select {
+		case <-running.done:
+			return
+		case <-deadline:
+			h.t.Errorf("the manager of %s did not stop", name)
+			return
+		case <-time.After(running.manager.config.stepPeriod):
+			running.clock.skip(running.manager.config.handoverWait)
+		}
+	}
 }
 
 // stop stops the manager of name, as SIGTERM does, and waits for it.
@@ -420,7 +491,9 @@ func TestAPrimaryKeepsServingThroughAnAPIOutageWhileItsPeersAgree(t *testing.T) 
 	h := twoInstances(t, "redis")
 
 	h.outage()
-	time.Sleep(2500 * time.Millisecond)
+	h.fastForward("cache-0", "cache-0 passes its renew deadline", 250*time.Millisecond, func() bool {
+		return h.instances["cache-0"].clock.now().Sub(time.Now()) > 2500*time.Millisecond
+	})
 
 	mustMatch(t, h.report("cache-0").Role, reportPrimary)
 	_, err := h.client("cache-0").do(context.Background(), "SET", "during", "outage")
@@ -434,7 +507,7 @@ func TestAPrimaryThatCannotRenewAndCannotReachAPeerFencesItself(t *testing.T) {
 	h.crash("cache-1")
 	h.outage()
 
-	h.waitFor("cache-0 detaches", func() bool { return h.report("cache-0").Role == reportDetached })
+	h.fastForward("cache-0", "cache-0 detaches", time.Second, func() bool { return h.report("cache-0").Role == reportDetached })
 	_, err := h.client("cache-0").do(context.Background(), "SET", "after", "fencing")
 	mustMatch(t, err != nil, true)
 }

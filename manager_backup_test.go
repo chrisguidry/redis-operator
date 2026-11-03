@@ -15,7 +15,7 @@ import (
 // its credentials Secret, and returns the store.
 func (h *managerHarness) withStore() (*s3Store, BackupStore) {
 	h.t.Helper()
-	endpoint := startTestStore(h.t)
+	s3 := startTestStore(h.t)
 	h.api.create(secretsResource, map[string]any{
 		"apiVersion": "v1", "kind": "Secret",
 		"metadata": map[string]any{"name": "store", "namespace": testNamespace},
@@ -24,11 +24,11 @@ func (h *managerHarness) withStore() (*s3Store, BackupStore) {
 			secretAccessKeyKey: []byte(testSecretKey),
 		},
 	})
-	store := BackupStore{Destination: "s3://" + testBucket + "/redis", Endpoint: endpoint, Credentials: SecretRef{Secret: "store"}}
+	store := BackupStore{Destination: "s3://" + s3.bucket + "/redis", Endpoint: s3.endpoint, Credentials: SecretRef{Secret: "store"}}
 	h.api.update(redisResource, testNamespace, h.name, func(object map[string]any) {
 		object["spec"].(map[string]any)["backup"] = toObject(h.t, store)
 	})
-	return testStore(h.t, endpoint, store.Destination), store
+	return testStore(h.t, s3.endpoint, store.Destination), store
 }
 
 // runBackup writes a Backup that the operator started on instance.
@@ -78,7 +78,7 @@ func TestAReplicaThatStartsUnderABackupSnapshotsThePrimarysData(t *testing.T) {
 	store, spec := h.withStore()
 	_, err := h.client("cache-0").do(context.Background(), "SET", "kept", "by-the-backup")
 	mustSucceed(t, err)
-	h.stop("cache-1")
+	h.stopWithoutHandover("cache-1")
 	h.runBackup("nightly", "cache-1", spec)
 
 	h.start("cache-1", "")
@@ -117,8 +117,8 @@ func TestANewRedisRestoresABackupOnItsFirstInstance(t *testing.T) {
 			}
 			h.runBackup("nightly", "cache-1", spec)
 			h.waitFor("the backup completes", func() bool { return h.backup("nightly").Status.Phase == backupCompleted })
-			h.stop("cache-0")
-			h.stop("cache-1")
+			h.stopWithoutHandover("cache-0")
+			h.stopWithoutHandover("cache-1")
 
 			restored := startManagerHarnessOn(t, h.api, "restored", "redis", 1, func(spec *RedisSpec) {
 				spec.Bootstrap = &Bootstrap{Recovery: &Recovery{Backup: "nightly"}}
@@ -164,8 +164,8 @@ func TestARedisRestoresABackupFromAVolume(t *testing.T) {
 	store := BackupStore{Volume: &BackupVolume{ClaimName: "backups"}}
 	h.runBackup("nightly", "cache-1", store)
 	h.waitFor("the backup completes", func() bool { return h.backup("nightly").Status.Phase == backupCompleted })
-	h.stop("cache-0")
-	h.stop("cache-1")
+	h.stopWithoutHandover("cache-0")
+	h.stopWithoutHandover("cache-1")
 
 	restored := startManagerHarnessOn(t, h.api, "restored", "redis", 1, func(spec *RedisSpec) {
 		spec.Bootstrap = &Bootstrap{Recovery: &Recovery{Backup: "nightly"}}

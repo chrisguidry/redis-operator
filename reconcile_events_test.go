@@ -260,7 +260,7 @@ func TestABackupPostsItsStart(t *testing.T) {
 	t.Parallel()
 	h := startHarness(t, 1)
 	h.steady("cache-0", 1)
-	h.withBackupStore("https://s3.example.com", "")
+	h.withBackupStore("https://s3.example.com", testBucket, "")
 	h.newBackup("nightly")
 
 	h.pass()
@@ -319,7 +319,7 @@ func TestABackupAnInstanceFinishesPostsItsEnd(t *testing.T) {
 			t.Parallel()
 			h := startHarness(t, 1)
 			h.steady("cache-0", 1)
-			h.withBackupStore("https://s3.example.com", "")
+			h.withBackupStore("https://s3.example.com", testBucket, "")
 			h.newBackup("nightly")
 			h.pass()
 			h.pass()
@@ -340,7 +340,7 @@ func TestABackupThatFinishedBeforeTheOperatorStartedPostsNothing(t *testing.T) {
 	t.Parallel()
 	h := startHarness(t, 1)
 	h.steady("cache-0", 1)
-	h.withBackupStore("https://s3.example.com", "")
+	h.withBackupStore("https://s3.example.com", testBucket, "")
 	h.newBackup("nightly")
 	h.api.update(backupsResource, testNamespace, "nightly", func(object map[string]any) {
 		metadataOf(object)["finalizers"] = []any{backupFinalizer}
