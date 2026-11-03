@@ -1,7 +1,9 @@
 package main
 
 import (
+	"strings"
 	"testing"
+	"time"
 )
 
 // setInstances changes spec.instances, as a user's edit does.
@@ -121,4 +123,99 @@ func TestTheStatefulSetDeletesTheVolumeOfAnInstanceItScalesAway(t *testing.T) {
 	policy, _ := h.statefulSetSpec()["persistentVolumeClaimRetentionPolicy"].(map[string]any)
 	mustMatch(t, policy["whenScaled"], any("Delete"))
 	mustMatch(t, policy["whenDeleted"], any("Retain"))
+}
+
+// The StatefulSet removes its highest ordinals first, and while no
+// primary is settled one of them may hold the only copy of a write
+// confirmed with WAIT, so a scale-down waits.
+func TestAScaleDownWaitsWhileThePrimaryIsNotSettled(t *testing.T) {
+	cases := []struct {
+		name     string
+		unsettle func(h *harness)
+		reason   string
+	}{
+		{"a failover is pending", func(h *harness) {
+			h.failQuorum(3, 1)
+			h.setReport(detached("cache-1", 90))
+			h.silence("cache-2")
+			h.passFor(10*time.Second, 2*time.Second)
+		}, "QuorumNotReached"},
+		{"no instance holds the lease", func(h *harness) {
+			h.steady("cache-0", 3)
+			h.pass()
+			h.holdLease("")
+		}, "NoPrimary"},
+		{"a switchover is in flight", func(h *harness) {
+			h.steady("cache-0", 3)
+			h.pass()
+			h.editPod("cache-0", func(object map[string]any) {
+				metadataOf(object)["annotations"] = map[string]any{switchoverAnnotation: "now"}
+			})
+			h.pass()
+			mustMatch(t, h.redis().Status.Switchover != nil, true)
+		}, "SwitchoverInProgress"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := startHarness(t, 3)
+			c.unsettle(h)
+
+			h.setInstances(1)
+			h.passFor(4*time.Second, 2*time.Second)
+
+			mustMatch(t, h.replicas(), 3)
+			ready := findReady(t, h.redis())
+			mustMatch(t, ready.Reason, c.reason)
+			mustMatch(t, strings.HasSuffix(ready.Message, "The StatefulSet keeps its 3 pods until the next primary holds the lease, then scales down to 1"), true)
+		})
+	}
+}
+
+// A failover during a scale-down still reaches every pod, and may name
+// one beyond spec.instances. Once that primary holds the Lease, the
+// scale-down moves it to an instance that stays, then shrinks.
+func TestAFailoverDuringAScaleDownCanNameAnInstanceTheScaleDownRemoves(t *testing.T) {
+	h := startHarness(t, 3)
+	h.failQuorum(3, 1)
+	h.setReport(detached("cache-1", 90))
+	h.silence("cache-2")
+	h.setInstances(1)
+	h.passFor(10*time.Second, 2*time.Second)
+	mustMatch(t, h.redis().Status.TargetPrimary, targetPending)
+
+	h.unsilence("cache-2")
+	h.setReport(detached("cache-2", 120))
+	h.passFor(2*time.Second, 2*time.Second)
+	mustMatch(t, h.redis().Status.TargetPrimary, "cache-2")
+	mustMatch(t, h.replicas(), 3)
+
+	h.unsilence("cache-0")
+	h.steady("cache-2", 3)
+	h.pass()
+	status := h.redis().Status
+	mustMatch(t, status.TargetPrimary, "cache-0")
+	mustMatch(t, status.Switchover.Reason, reasonScaleDown)
+	mustMatch(t, h.replicas(), 3)
+
+	h.steady("cache-0", 3)
+	h.pass()
+	mustMatch(t, h.redis().Status.Switchover == nil, true)
+	mustMatch(t, h.replicas(), 1)
+}
+
+// The budgets count the pods the StatefulSet keeps, so a drain during
+// a held scale-down still evicts one replica at a time.
+func TestTheBudgetsCountThePodsAHeldScaleDownKeeps(t *testing.T) {
+	h := startHarness(t, 3)
+	h.failQuorum(3, 1)
+	h.setReport(detached("cache-1", 90))
+	h.silence("cache-2")
+
+	h.setInstances(1)
+	h.passFor(4*time.Second, 2*time.Second)
+
+	var budget map[string]any
+	h.api.read(budgetsResource, testNamespace, "cache-replicas", &budget)
+	mustMatch(t, budget["spec"].(map[string]any)["minAvailable"], any(float64(1)))
+	mustMatch(t, h.api.read(budgetsResource, testNamespace, "cache-primary", &budget), true)
 }

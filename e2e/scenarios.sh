@@ -187,6 +187,64 @@ scenario_scale() {
     die "scaling up refused writes: the held writer saw $(($(held_replies NOREPLICAS) - refused)) NOREPLICAS replies"
 }
 
+# scenario_scale_during_failover freezes the primary and one replica, so
+# the failover that starts waits for its quorum, and lowers instances
+# to one while it waits. The StatefulSet must keep its three pods, since
+# the frozen replica may hold the only other copy of a confirmed write.
+# The freeze ends before the kubelet's liveness probe restarts either
+# pod. Then the failover names the next primary, the scale-down moves it
+# to cache-0 if it is not there already, and the StatefulSet shrinks.
+scenario_scale_during_failover() {
+  local old replica old_node replica_node
+  old=$(primary)
+  replica=$(kubectl -n "$NS" get pods -l redis.guid.foo/cluster=cache -o name | cut -d/ -f2 | grep -vx "$old" | head -1)
+  old_node=$(node_of "$old")
+  replica_node=$(node_of "$replica")
+  log "scenario: freeze the primary $old and the replica $replica, then scale to one instance while the failover waits"
+  signal_instance "$old_node" STOP
+  signal_instance "$replica_node" STOP
+  retry "a pending failover" 20 target_is pending
+  kubectl -n "$NS" patch redis cache --type=merge -p '{"spec":{"instances":1}}' >/dev/null
+  retry "Ready saying the scale-down waits" 10 ready_message_has "keeps its 3 pods until the next primary holds the lease, then scales down to 1"
+  statefulset_replicas_are 3 || die "the StatefulSet shrank while the failover was pending"
+  pod_count_is 3 >/dev/null || die "a pod went away while the failover was pending"
+  signal_instance "$replica_node" CONT
+  signal_instance "$old_node" CONT
+  retry "the primary moving to cache-0" 180 primary_is cache-0
+  retry "one pod left" 120 pod_count_is 1
+  wait_ready 180
+  # One instance has no replica to acknowledge WAIT 1, so the writer
+  # confirms nothing new; the held writer shows that writes go on.
+  retry "the held writer writing to cache-0" 60 held_writes_after "$(held_replies '^[0-9]')"
+  assert_counter_kept "scaling to one instance during a failover"
+
+  log "scenario: scale back to three instances"
+  kubectl -n "$NS" patch redis cache --type=merge -p '{"spec":{"instances":3}}' >/dev/null
+  wait_ready 180
+  assert_no_confirmed_write_lost "scaling back to three instances"
+}
+
+target_is() {
+  local now
+  now=$(kubectl -n "$NS" get redis cache -o jsonpath='{.status.targetPrimary}')
+  echo "targetPrimary: $now"
+  [ "$now" = "$1" ]
+}
+
+ready_message_has() {
+  local message
+  message=$(kubectl -n "$NS" get redis cache -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}')
+  echo "Ready: $message"
+  grep -qF "$1" <<<"$message"
+}
+
+statefulset_replicas_are() {
+  local replicas
+  replicas=$(kubectl -n "$NS" get statefulset cache -o jsonpath='{.spec.replicas}')
+  echo "StatefulSet replicas: $replicas"
+  [ "$replicas" = "$1" ]
+}
+
 primary_is() {
   local now
   now=$(primary)

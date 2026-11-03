@@ -43,6 +43,14 @@ kubectl -n example get pods -l redis.guid.foo/cluster=cache -L redis.guid.foo/ro
 `DataLost` stays `True` once set; it records that the data set started
 again, not that it is still missing.
 
+A `Ready` message that ends with `The StatefulSet keeps its 3 pods until
+the next primary holds the lease, then scales down to 1` means
+`spec.instances` was lowered while a failover, a switchover, or a Lease
+with no holder left the primary unsettled. The pods stay so the
+failover can reach the writes they hold. Read the reason for what the
+`Redis` waits on; once the next primary holds the Lease, the scale-down
+goes on by itself.
+
 ## Events
 
 The operator posts an Event for each condition transition and each
@@ -285,8 +293,8 @@ on the new revision.
 ## Drains and PodDisruptionBudgets
 
 - `cache-primary` keeps `minAvailable: 1` on the pod with the primary
-  label, when `instances` is more than 1. An eviction cannot take the
-  primary.
+  label, when the StatefulSet has more than one pod. An eviction cannot
+  take the primary.
 - `cache-replicas` lets one replica go at a time.
 
 When the primary's node is cordoned, the operator switches over to a

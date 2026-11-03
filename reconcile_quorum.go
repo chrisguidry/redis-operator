@@ -27,10 +27,11 @@ func (d *decision) quorumAcks() int {
 }
 
 // quorum is how many instances a failover must reach. It counts every
-// pod that could have acknowledged a write, which during a scale-down
-// is more than spec.instances.
+// pod that could have acknowledged a write: each ordinal the
+// StatefulSet keeps, which during a scale-down is more than
+// spec.instances, and each pod beyond it that has not gone yet.
 func (d *decision) quorum() int {
-	total := max(d.r.Spec.instances(), len(d.pods))
+	total := max(d.scale, len(d.pods))
 	return max(1, total-d.quorumAcks())
 }
 

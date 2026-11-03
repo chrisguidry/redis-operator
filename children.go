@@ -99,9 +99,11 @@ func children(r *Redis, operatorImage string, secrets []string, restore *BackupV
 			// One replica may go at a time. The budget states how many
 			// must stay, because the disruption controller counts a
 			// maxUnavailable budget against the StatefulSet's whole
-			// scale, primary included, and would allow no eviction.
+			// scale, primary included, and would allow no eviction. It
+			// counts the StatefulSet's scale and not spec.instances, so a
+			// scale-down that waits keeps the pods it waits for.
 			"spec": map[string]any{
-				"minAvailable": max(r.Spec.instances()-2, 0),
+				"minAvailable": max(replicas-2, 0),
 				"selector":     map[string]any{"matchLabels": map[string]string{clusterLabel: name, roleLabel: roleReplica}},
 			},
 		}},
@@ -109,7 +111,7 @@ func children(r *Redis, operatorImage string, secrets []string, restore *BackupV
 		// An eviction cannot take the primary. The operator switches over
 		// when the primary's node is cordoned, and the old primary is
 		// then a replica that this budget does not cover. A single
-		// instance has nothing to switch to, and the budget would block
+		// pod has nothing to switch to, and the budget would block
 		// every drain of its node, so it has none.
 		{resource: budgetsResource, name: name + "-primary", body: map[string]any{
 			"apiVersion": "policy/v1", "kind": "PodDisruptionBudget", "metadata": childMeta(r, name+"-primary", nil),
@@ -117,7 +119,7 @@ func children(r *Redis, operatorImage string, secrets []string, restore *BackupV
 				"minAvailable": 1,
 				"selector":     map[string]any{"matchLabels": map[string]string{clusterLabel: name, roleLabel: rolePrimary}},
 			},
-		}, remove: r.Spec.instances() <= 1},
+		}, remove: replicas <= 1},
 		// Last, so a failed apply where cert-manager is missing leaves
 		// every other child applied.
 		certificate(r),

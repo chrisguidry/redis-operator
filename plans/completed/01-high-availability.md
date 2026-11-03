@@ -90,8 +90,8 @@ every name starts with the resource's name.
 | Service | `<name>-nodes` | headless, the StatefulSet's governing Service |
 | Secret | `<name>-app` | `password`, `host`, `port`, `uri`, `ro-uri`, and with TLS `tls-port`, `tls-uri`, `tls-ro-uri` |
 | ServiceAccount, Role, RoleBinding | `<name>` | what the instance managers may read and write |
-| PodDisruptionBudget | `<name>-primary` | `minAvailable: 1` on the primary, when instances > 1; the operator deletes it when instances drops to 1, because it would block every drain of the last pod's node |
-| PodDisruptionBudget | `<name>-replicas` | `minAvailable: instances - 2` on the replicas, never below 0, so one may go at a time; made for every `Redis`, including one instance |
+| PodDisruptionBudget | `<name>-primary` | `minAvailable: 1` on the primary, when the StatefulSet has more than one replica; the operator deletes it when that drops to 1, because it would block every drain of the last pod's node |
+| PodDisruptionBudget | `<name>-replicas` | `minAvailable` of the StatefulSet's replicas less 2 on the replicas, never below 0, so one may go at a time; made for every `Redis`, including one instance. The StatefulSet's replicas are `instances` except during a scale-down (see "Scaling") |
 | Lease | `<name>-primary` | held by the primary's instance manager |
 | Certificate | `<name>-tls` | with `tls.issuerRef` only, for cert-manager; see "TLS" |
 
@@ -181,9 +181,11 @@ it did not reach may hold a write that the promoted one lacks. The
 failover therefore names the next primary only once it has reached
 enough instances that one of them must hold every confirmed write.
 
-Let `N` be the number of instances: `spec.instances`, or the number of
-pods while a scale-down has not yet removed the extra ones, because
-those pods could have acknowledged a write too. Let `n` be the larger
+Let `N` be the number of instances: the StatefulSet's replicas, which
+are `spec.instances` except while a scale-down keeps more (see
+"Scaling"), or the number of pods while a scale-down has not yet
+removed the extra ones, because those pods could have acknowledged a
+write too. Let `n` be the larger
 of 1 and `status.minReplicasToWrite`, the value the primary runs with.
 A write that a client confirmed with `WAIT n` is on the old primary and
 on at least `n` of the other `N - 1` instances, so at most `N - 1 - n`
@@ -401,6 +403,28 @@ such a replica. Once that replica holds the Lease, the StatefulSet
 shrinks. While there are more pods than `instances`, `Ready` has
 reason `ScalingDown`. Shrinking to one instance deletes
 `<name>-primary`.
+
+The StatefulSet never shrinks while the primary is not settled: while
+a failover is pending, while no instance holds the Lease, or while the
+holder is not the target, as during a switchover. In those states the
+operator also keeps the replicas at least at the StatefulSet's current
+`spec.replicas`. A write confirmed with `WAIT` is on the primary and on
+some replicas, and while the primary is not settled, an instance beyond
+the new count may be the one that holds it. A failover in that time
+reaches and may name any of the StatefulSet's pods, and its quorum
+counts them all. When it names one beyond `instances`, the target keeps
+that pod, and once it holds the Lease the `ScaleDown` switchover moves
+the role to an instance that stays, and the StatefulSet shrinks after
+that. While the operator holds a scale-down this way, the `Ready`
+message ends with `The StatefulSet keeps its <n> pods until the next
+primary holds the lease, then scales down to <instances>`, after the
+message of whatever reason the condition has. The hold changes no
+reason, so it posts no Event of its own.
+
+The two budgets count the StatefulSet's replicas, not `instances`:
+`<name>-replicas` keeps all but one replica of them, and
+`<name>-primary` exists while there is more than one. So a drain
+during a held scale-down still evicts one replica at a time.
 
 The StatefulSet's `persistentVolumeClaimRetentionPolicy` is
 `whenScaled: Delete` and `whenDeleted: Retain`. A removed instance

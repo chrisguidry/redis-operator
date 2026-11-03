@@ -133,7 +133,7 @@ them.
 | Secret | `cache-app` | connection details |
 | Certificate | `cache-tls` | with `tls.issuerRef` only: the certificate cert-manager issues into the Secret `cache-tls` |
 | ServiceAccount, Role, RoleBinding | `cache` | what the instance managers may read and write |
-| PodDisruptionBudget | `cache-primary` | `minAvailable: 1` on the primary, when `instances` is more than 1 |
+| PodDisruptionBudget | `cache-primary` | `minAvailable: 1` on the primary, when the StatefulSet has more than one pod |
 | PodDisruptionBudget | `cache-replicas` | one replica may be evicted at a time |
 | Lease | `cache-primary` | held by the primary's instance manager |
 
@@ -417,6 +417,17 @@ the Lease. The volume claims of removed instances are deleted with
 them, so a later scale-up starts those instances empty, and each copies
 the data from the primary. Scaling to one instance removes the
 `cache-primary` PodDisruptionBudget, so a drain can evict the only pod.
+
+The StatefulSet does not shrink while a failover is pending, while no
+instance holds the Lease, or while a switchover is moving the primary,
+because one of the pods a scale-down removes may hold a write a client
+confirmed with `WAIT`. The failover can still name any of those pods.
+Once the next primary holds the Lease, the scale-down goes on as above,
+with a `ScaleDown` switchover first if the new primary is one of the
+pods it removes. While it waits, the `Ready` message ends with `The
+StatefulSet keeps its 3 pods until the next primary holds the lease,
+then scales down to 1`, and the budgets still let a drain evict only
+one replica at a time.
 
 `minReplicasToWrite` must stay less than `instances`. If it is set
 explicitly, the API server refuses a scale to a count at or below it;

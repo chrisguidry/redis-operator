@@ -103,10 +103,16 @@ type NodeSpec struct {
 	Unschedulable bool `json:"unschedulable,omitempty"`
 }
 
-// StatefulSet carries the revision fields the operator rolls pods by.
+// StatefulSet carries the scale the operator holds during a scale-down
+// and the revision fields it rolls pods by.
 type StatefulSet struct {
 	Metadata ObjectMeta        `json:"metadata"`
+	Spec     StatefulSetSpec   `json:"spec"`
 	Status   StatefulSetStatus `json:"status"`
+}
+
+type StatefulSetSpec struct {
+	Replicas int `json:"replicas,omitempty"`
 }
 
 type StatefulSetStatus struct {

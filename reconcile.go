@@ -316,13 +316,13 @@ func (c *controller) state(r *Redis) *redisState {
 }
 
 // ensureChildren applies each child whose body changed since the
-// operator last applied it, and keeps the Secret.
-func (c *controller) ensureChildren(ctx context.Context, r *Redis, st *redisState, w *world) error {
+// operator last applied it, and keeps the Secret. replicas is the
+// StatefulSet's scale (reconcile_scale.go).
+func (c *controller) ensureChildren(ctx context.Context, r *Redis, st *redisState, w *world, replicas int) error {
 	if err := c.ensureSecret(ctx, r, st); err != nil {
 		return err
 	}
-	holder := w.leases[r.Metadata.Namespace+"/"+primaryLeaseName(r.Metadata.Name)].Spec.HolderIdentity
-	for _, each := range children(r, c.operatorImage, managerSecrets(r, w), restoreVolume(r, w), replicasFor(r, holder)) {
+	for _, each := range children(r, c.operatorImage, managerSecrets(r, w), restoreVolume(r, w), replicas) {
 		err := c.ensureChild(ctx, r, st, each)
 		if !each.optional {
 			if err != nil {
