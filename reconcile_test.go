@@ -8,6 +8,7 @@ import (
 )
 
 func TestANewRedisGetsItsObjectsAndAFirstTarget(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 
 	h.pass()
@@ -36,6 +37,7 @@ func TestANewRedisGetsItsObjectsAndAFirstTarget(t *testing.T) {
 }
 
 func TestTheSecretKeepsItsPasswordAcrossPasses(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 1)
 	h.pass()
 	var first map[string]any
@@ -52,6 +54,7 @@ func TestTheSecretKeepsItsPasswordAcrossPasses(t *testing.T) {
 }
 
 func TestTheRoleLabelsFollowTheLease(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	h.api.update(redisResource, testNamespace, "cache", func(object map[string]any) {
 		object["status"] = map[string]any{"targetPrimary": "cache-1"}
@@ -68,6 +71,7 @@ func TestTheRoleLabelsFollowTheLease(t *testing.T) {
 }
 
 func TestTheHolderLosesThePrimaryLabelInThePassThatMovesTheTarget(t *testing.T) {
+	t.Parallel()
 	moves := []struct {
 		name string
 		move func(h *harness)
@@ -85,6 +89,7 @@ func TestTheHolderLosesThePrimaryLabelInThePassThatMovesTheTarget(t *testing.T) 
 	}
 	for _, move := range moves {
 		t.Run(move.name, func(t *testing.T) {
+			t.Parallel()
 			h := startHarness(t, 3)
 			h.steady("cache-0", 3)
 			h.pass()
@@ -110,6 +115,7 @@ func findReady(t *testing.T, r Redis) Condition {
 }
 
 func TestNoFailoverStartsBeforeAnyPrimaryHeldTheLease(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	for i := range 3 {
 		h.silence(instanceName(h.name, i))
@@ -121,6 +127,7 @@ func TestNoFailoverStartsBeforeAnyPrimaryHeldTheLease(t *testing.T) {
 }
 
 func TestASilentPrimaryStartsAFailoverToTheReplicaWithTheMostData(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	h.steady("cache-0", 3)
 	h.pass()
@@ -137,6 +144,7 @@ func TestASilentPrimaryStartsAFailoverToTheReplicaWithTheMostData(t *testing.T) 
 }
 
 func TestACordonedPrimaryNodeStartsASwitchover(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	h.steady("cache-0", 3)
 	h.pass()
@@ -153,6 +161,7 @@ func TestACordonedPrimaryNodeStartsASwitchover(t *testing.T) {
 }
 
 func TestASwitchoverEndsWhenTheNewPrimaryHoldsTheLease(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 2)
 	h.steady("cache-0", 2)
 	h.pass()
@@ -172,6 +181,7 @@ func TestASwitchoverEndsWhenTheNewPrimaryHoldsTheLease(t *testing.T) {
 }
 
 func TestASwitchoverThatRunsTooLongIsGivenUp(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 2)
 	h.steady("cache-0", 2)
 	h.pass()
@@ -190,6 +200,7 @@ func TestASwitchoverThatRunsTooLongIsGivenUp(t *testing.T) {
 }
 
 func TestNoSwitchoverStartsWithoutAReplicaThatFollowsThePrimary(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 2)
 	h.steady("cache-0", 2)
 	h.setReport(instanceReport{Name: "cache-1", Role: reportReplica, Target: "cache-0", LinkUp: false, Following: h.ip("cache-0"), HasData: true})
@@ -204,6 +215,7 @@ func TestNoSwitchoverStartsWithoutAReplicaThatFollowsThePrimary(t *testing.T) {
 }
 
 func TestARolloutRollsTheReplicasFirstThenSwitchesOver(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	h.steady("cache-0", 3)
 	h.pass()
@@ -244,6 +256,7 @@ func TestARolloutRollsTheReplicasFirstThenSwitchesOver(t *testing.T) {
 // Lease with no holder right after a failover named it is no new
 // failure.
 func TestANewTargetHasTimeToTakeTheLeaseBeforeAnotherFailover(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	h.steady("cache-0", 3)
 	h.pass()
@@ -272,12 +285,14 @@ func TestANewTargetHasTimeToTakeTheLeaseBeforeAnotherFailover(t *testing.T) {
 // StatefulSet's whole scale, and allows no eviction at all, so the
 // budget states the replicas that must stay.
 func TestTheReplicaBudgetKeepsAllButOneReplica(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		instances int
 		want      int
 	}{{2, 0}, {3, 1}, {5, 3}}
 	for _, c := range cases {
 		t.Run(strconv.Itoa(c.instances), func(t *testing.T) {
+			t.Parallel()
 			h := startHarness(t, c.instances)
 
 			h.pass()
@@ -296,6 +311,7 @@ func TestTheReplicaBudgetKeepsAllButOneReplica(t *testing.T) {
 // failover names the next primary, the old holder's silence is no new
 // failure: the operator waits on the target it named.
 func TestASilentOldHolderDoesNotRestartAFailoverItAlreadyStarted(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	h.steady("cache-0", 3)
 	h.pass()
@@ -319,8 +335,10 @@ func TestASilentOldHolderDoesNotRestartAFailoverItAlreadyStarted(t *testing.T) {
 }
 
 func TestARedisWhoseInstancesAllRestartEmptyStartsAnEmptyDataset(t *testing.T) {
+	t.Parallel()
 	for _, instances := range []int{1, 3} {
 		t.Run(strconv.Itoa(instances), func(t *testing.T) {
+			t.Parallel()
 			h := startHarness(t, instances)
 			h.steady("cache-0", instances)
 			h.pass()
@@ -346,6 +364,7 @@ func TestARedisWhoseInstancesAllRestartEmptyStartsAnEmptyDataset(t *testing.T) {
 // its pod restarts starts no failover, and it comes back as primary
 // with whatever data it kept.
 func TestASilentSingleInstanceStaysTheTarget(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 1)
 	h.steady("cache-0", 1)
 	h.pass()

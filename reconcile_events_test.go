@@ -63,6 +63,7 @@ func (h *harness) failOver() {
 }
 
 func TestAFailoverPostsItsStartAndTheChosenPrimary(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 
 	h.failOver()
@@ -74,6 +75,7 @@ func TestAFailoverPostsItsStartAndTheChosenPrimary(t *testing.T) {
 }
 
 func TestANewRedisPostsItsFirstReadinessAsNormal(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	h.pass()
 	h.steady("cache-0", 3)
@@ -86,6 +88,7 @@ func TestANewRedisPostsItsFirstReadinessAsNormal(t *testing.T) {
 }
 
 func TestAConditionWhoseMessageAloneChangesPostsNothing(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	h.steady("cache-0", 3)
 	h.pass()
@@ -109,6 +112,7 @@ func TestAConditionWhoseMessageAloneChangesPostsNothing(t *testing.T) {
 }
 
 func TestASwitchoverPostsItsStartWithItsCauseAndItsEnd(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		cause  func(h *harness)
@@ -127,6 +131,7 @@ func TestASwitchoverPostsItsStartWithItsCauseAndItsEnd(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			h := startHarness(t, 2)
 			h.steady("cache-0", 2)
 			h.pass()
@@ -144,6 +149,7 @@ func TestASwitchoverPostsItsStartWithItsCauseAndItsEnd(t *testing.T) {
 }
 
 func TestASwitchoverThatRunsTooLongPostsAWarning(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 2)
 	h.steady("cache-0", 2)
 	h.pass()
@@ -158,6 +164,7 @@ func TestASwitchoverThatRunsTooLongPostsAWarning(t *testing.T) {
 }
 
 func TestARolloutPostsEachStep(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	h.steady("cache-0", 3)
 	h.pass()
@@ -176,6 +183,7 @@ func TestARolloutPostsEachStep(t *testing.T) {
 }
 
 func TestAFailedCanaryPostsItsRollback(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	h.steady("cache-0", 3)
 	h.pass()
@@ -194,6 +202,7 @@ func TestAFailedCanaryPostsItsRollback(t *testing.T) {
 }
 
 func TestAStatusWriteThatConflictsPostsNothing(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	h.steady("cache-0", 3)
 	h.pass()
@@ -207,6 +216,7 @@ func TestAStatusWriteThatConflictsPostsNothing(t *testing.T) {
 }
 
 func TestAnEventAPIThatHangsDoesNotSlowAPass(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	h.api.hang("POST", eventsResource.path(testNamespace, ""))
 	h.steady("cache-0", 3)
@@ -221,6 +231,7 @@ func TestAnEventAPIThatHangsDoesNotSlowAPass(t *testing.T) {
 }
 
 func TestConditionEventTypeWarnsOfABadStatus(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		condition  Condition
 		hadPrimary bool
@@ -246,6 +257,7 @@ func TestConditionEventTypeWarnsOfABadStatus(t *testing.T) {
 }
 
 func TestABackupPostsItsStart(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 1)
 	h.steady("cache-0", 1)
 	h.withBackupStore("https://s3.example.com", "")
@@ -260,6 +272,7 @@ func TestABackupPostsItsStart(t *testing.T) {
 }
 
 func TestABackupTheOperatorFailsPostsOneFailure(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 1)
 	h.steady("cache-0", 1)
 	h.newBackup("nightly")
@@ -290,6 +303,7 @@ func (h *harness) finishBackup(name string, status map[string]any) {
 }
 
 func TestABackupAnInstanceFinishesPostsItsEnd(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		status map[string]any
@@ -302,6 +316,7 @@ func TestABackupAnInstanceFinishesPostsItsEnd(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			h := startHarness(t, 1)
 			h.steady("cache-0", 1)
 			h.withBackupStore("https://s3.example.com", "")
@@ -322,6 +337,7 @@ func TestABackupAnInstanceFinishesPostsItsEnd(t *testing.T) {
 }
 
 func TestABackupThatFinishedBeforeTheOperatorStartedPostsNothing(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 1)
 	h.steady("cache-0", 1)
 	h.withBackupStore("https://s3.example.com", "")
@@ -339,6 +355,7 @@ func TestABackupThatFinishedBeforeTheOperatorStartedPostsNothing(t *testing.T) {
 }
 
 func TestASwitchoverMessageSaysWhyInWords(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		reason string
 		want   string

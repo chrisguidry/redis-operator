@@ -58,6 +58,7 @@ func replication(t *testing.T, s *server) replicationInfo {
 }
 
 func TestAServerStartsDetachedAndRefusesWrites(t *testing.T) {
+	t.Parallel()
 	for _, engine := range engines {
 		t.Run(engine, func(t *testing.T) {
 			s := startManagedServer(t, engine, "127.0.0.2", freePort(t))
@@ -72,6 +73,7 @@ func TestAServerStartsDetachedAndRefusesWrites(t *testing.T) {
 }
 
 func TestAClientInThePodReachesTheServerOnLoopback(t *testing.T) {
+	t.Parallel()
 	for _, engine := range engines {
 		t.Run(engine, func(t *testing.T) {
 			port := freePort(t)
@@ -87,6 +89,7 @@ func TestAClientInThePodReachesTheServerOnLoopback(t *testing.T) {
 }
 
 func TestFailoverToHandsThePrimaryRoleOverWithItsData(t *testing.T) {
+	t.Parallel()
 	for _, engine := range engines {
 		t.Run(engine, func(t *testing.T) {
 			ctx := context.Background()
@@ -114,6 +117,7 @@ func TestFailoverToHandsThePrimaryRoleOverWithItsData(t *testing.T) {
 }
 
 func TestFollowAndPromoteLeaveAServerThatIsAlreadyThere(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	port := freePort(t)
 	a := startManagedServer(t, "redis", "127.0.0.2", port)

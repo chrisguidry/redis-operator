@@ -45,6 +45,7 @@ func loadCRDFrom(t *testing.T, path string) *apiextensionsv1.CustomResourceDefin
 }
 
 func TestTheCRDNamesTheResourceTheOperatorWatches(t *testing.T) {
+	t.Parallel()
 	crd := loadCRD(t)
 
 	mustMatch(t, crd.Spec.Group, redisResource.Group)
@@ -58,6 +59,7 @@ func TestTheCRDNamesTheResourceTheOperatorWatches(t *testing.T) {
 // serves the resource, and that pass compiles each CEL rule and
 // estimates its cost.
 func TestTheAPIServerWouldAcceptEveryCRD(t *testing.T) {
+	t.Parallel()
 	for _, path := range crds {
 		t.Run(path, func(t *testing.T) {
 			scheme := runtime.NewScheme()
@@ -78,6 +80,7 @@ func TestTheAPIServerWouldAcceptEveryCRD(t *testing.T) {
 // Every spec field the Go types read is in its schema, so no field the
 // operator acts on is one the API server drops.
 func TestEverySchemaHoldsItsSpecFields(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		path string
 		spec reflect.Type
@@ -140,6 +143,7 @@ func redisObject(spec map[string]any) map[string]any {
 }
 
 func TestTheExampleIsValid(t *testing.T) {
+	t.Parallel()
 	raw, err := os.ReadFile("deploy/examples/redis.yaml")
 	mustSucceed(t, err)
 	var object map[string]any
@@ -151,6 +155,7 @@ func TestTheExampleIsValid(t *testing.T) {
 }
 
 func TestTheCRDRefuses(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		spec map[string]any
@@ -191,6 +196,7 @@ func user(name, rules string) map[string]any {
 }
 
 func TestTheCRDAccepts(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		spec map[string]any
@@ -213,6 +219,7 @@ func TestTheCRDAccepts(t *testing.T) {
 }
 
 func TestTheEngineAndStorageCannotChange(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		old, new map[string]any

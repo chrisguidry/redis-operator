@@ -20,6 +20,7 @@ import (
 // ListUsers request, signed at a known time with the documented example
 // keys.
 func TestTheSignerMatchesAWSsExample(t *testing.T) {
+	t.Parallel()
 	req, err := http.NewRequest(http.MethodGet, "https://iam.amazonaws.com/?Action=ListUsers&Version=2010-05-08", nil)
 	mustSucceed(t, err)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
@@ -34,6 +35,7 @@ func TestTheSignerMatchesAWSsExample(t *testing.T) {
 }
 
 func TestParseDestination(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		destination, bucket, prefix, err string
 	}{
@@ -129,6 +131,7 @@ func testStore(t *testing.T, endpoint, destination string) *s3Store {
 }
 
 func TestTheStoreKeepsWhatItIsGiven(t *testing.T) {
+	t.Parallel()
 	store := testStore(t, startTestStore(t), "s3://"+testBucket+"/some prefix")
 	ctx := context.Background()
 	body := bytes.Repeat([]byte("redis"), 100_000)
@@ -145,6 +148,7 @@ func TestTheStoreKeepsWhatItIsGiven(t *testing.T) {
 }
 
 func TestADeletedObjectIsGone(t *testing.T) {
+	t.Parallel()
 	store := testStore(t, startTestStore(t), "s3://"+testBucket)
 	ctx := context.Background()
 	mustSucceed(t, store.put(ctx, "key", strings.NewReader("value"), 5))
@@ -156,6 +160,7 @@ func TestADeletedObjectIsGone(t *testing.T) {
 }
 
 func TestAWrongSecretIsRefused(t *testing.T) {
+	t.Parallel()
 	endpoint := startTestStore(t)
 	store, err := newS3Store(endpoint, "", "s3://"+testBucket, testAccessKey, "wrong", testNamespace)
 	mustSucceed(t, err)

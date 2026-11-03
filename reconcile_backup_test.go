@@ -40,6 +40,7 @@ func (h *harness) backup(name string) Backup {
 }
 
 func TestABackupStartsOnTheReplicaWithTheMostData(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	h.steady("cache-0", 3)
 	h.withBackupStore("https://s3.example.com", "")
@@ -79,6 +80,7 @@ func (h *harness) mountBackups(name, claim string) {
 }
 
 func TestABackupToAVolumeSkipsAReplicaThatDoesNotMountIt(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 2)
 	h.steady("cache-0", 2)
 	h.withBackupVolume("backups")
@@ -92,6 +94,7 @@ func TestABackupToAVolumeSkipsAReplicaThatDoesNotMountIt(t *testing.T) {
 }
 
 func TestABackupToAVolumeWaitsWhileNoInstanceMountsIt(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 2)
 	h.steady("cache-0", 2)
 	h.withBackupVolume("backups")
@@ -110,6 +113,7 @@ func TestABackupToAVolumeWaitsWhileNoInstanceMountsIt(t *testing.T) {
 }
 
 func TestABackupToAVolumeSkipsAnInstanceThatMountsAnotherClaim(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 2)
 	h.steady("cache-0", 2)
 	h.withBackupVolume("backups")
@@ -124,6 +128,7 @@ func TestABackupToAVolumeSkipsAnInstanceThatMountsAnotherClaim(t *testing.T) {
 }
 
 func TestABackupOfASingleInstanceRunsOnThePrimary(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 1)
 	h.steady("cache-0", 1)
 	h.withBackupStore("https://s3.example.com", "")
@@ -136,6 +141,7 @@ func TestABackupOfASingleInstanceRunsOnThePrimary(t *testing.T) {
 }
 
 func TestABackupOfARedisWithNoStoreFails(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 1)
 	h.steady("cache-0", 1)
 	h.newBackup("nightly")
@@ -149,6 +155,7 @@ func TestABackupOfARedisWithNoStoreFails(t *testing.T) {
 }
 
 func TestABackupThatRunsTooLongFails(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 1)
 	h.steady("cache-0", 1)
 	h.withBackupStore("https://s3.example.com", "")
@@ -175,6 +182,7 @@ func (h *harness) runningBackup(name string) {
 }
 
 func TestABackupWhoseInstanceIsGoneFails(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 2)
 	h.runningBackup("nightly")
 
@@ -187,6 +195,7 @@ func TestABackupWhoseInstanceIsGoneFails(t *testing.T) {
 }
 
 func TestABackupWhoseInstanceRestartedFails(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 2)
 	h.runningBackup("nightly")
 
@@ -201,6 +210,7 @@ func TestABackupWhoseInstanceRestartedFails(t *testing.T) {
 }
 
 func TestAScheduledBackupMakesABackupWhenItIsDue(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 1)
 	h.steady("cache-0", 1)
 	h.api.create(scheduledBackupsResource, ScheduledBackup{
@@ -236,6 +246,7 @@ func (h *harness) completedBackup(name string, completedAt time.Time, store Back
 }
 
 func TestRetentionDeletesOldBackupsButKeepsTheNewest(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 1)
 	h.steady("cache-0", 1)
 	endpoint := startTestStore(t)
@@ -253,6 +264,7 @@ func TestRetentionDeletesOldBackupsButKeepsTheNewest(t *testing.T) {
 }
 
 func TestRetentionKeepsTheNewestBackupHoweverOld(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 1)
 	h.steady("cache-0", 1)
 	store := h.withBackupStore("https://s3.example.com", "1d")
@@ -264,6 +276,7 @@ func TestRetentionKeepsTheNewestBackupHoweverOld(t *testing.T) {
 }
 
 func TestDeletingABackupDeletesItsObject(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 1)
 	h.steady("cache-0", 1)
 	endpoint := startTestStore(t)

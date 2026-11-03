@@ -58,6 +58,7 @@ func (h *harness) podGone(name string) bool {
 }
 
 func TestANewImageRollsOnlyTheCanaryFirst(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	h.steady("cache-0", 3)
 	h.pass()
@@ -78,6 +79,7 @@ func TestANewImageRollsOnlyTheCanaryFirst(t *testing.T) {
 }
 
 func TestAProvenCanaryRollsTheRestAndTheImageLands(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	h.steady("cache-0", 3)
 	h.pass()
@@ -108,6 +110,7 @@ func TestAProvenCanaryRollsTheRestAndTheImageLands(t *testing.T) {
 }
 
 func TestACanaryThatNeverHoldsTheDataIsRolledBack(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	h.steady("cache-0", 3)
 	h.pass()
@@ -139,6 +142,7 @@ func TestACanaryThatNeverHoldsTheDataIsRolledBack(t *testing.T) {
 }
 
 func TestRevertingTheImageAfterAFailureEndsTheRollout(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	h.steady("cache-0", 3)
 	h.pass()

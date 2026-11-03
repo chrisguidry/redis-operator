@@ -49,6 +49,7 @@ func detached(name string, offset int64) instanceReport {
 }
 
 func TestAFailoverNamesAPrimaryOnlyOnceItReachedEnoughInstances(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name        string
 		instances   int
@@ -77,6 +78,7 @@ func TestAFailoverNamesAPrimaryOnlyOnceItReachedEnoughInstances(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			h := startHarness(t, c.instances)
 			h.failQuorum(c.instances, c.minReplicas)
 			answered := map[string]bool{}
@@ -98,6 +100,7 @@ func TestAFailoverNamesAPrimaryOnlyOnceItReachedEnoughInstances(t *testing.T) {
 }
 
 func TestAFailoverWithoutItsQuorumSaysWhy(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	h.failQuorum(3, 1)
 	h.setReport(detached("cache-1", 90))
@@ -118,6 +121,7 @@ func TestAFailoverWithoutItsQuorumSaysWhy(t *testing.T) {
 // The detach wait comes first: until it passes, a failover that has
 // not heard from every replica is in progress, not short of a quorum.
 func TestAFailoverIsNotShortOfAQuorumBeforeTheDetachWait(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	h.failQuorum(3, 1)
 	h.setReport(detached("cache-1", 90))
@@ -129,6 +133,7 @@ func TestAFailoverIsNotShortOfAQuorumBeforeTheDetachWait(t *testing.T) {
 }
 
 func TestAnInstanceThatComesBackCompletesTheQuorum(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	h.failQuorum(3, 1)
 	h.setReport(detached("cache-1", 90))
@@ -144,6 +149,7 @@ func TestAnInstanceThatComesBackCompletesTheQuorum(t *testing.T) {
 }
 
 func TestAnAnnotationForcesOneFailoverWithoutItsQuorum(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	h.failQuorum(3, 1)
 	h.setReport(detached("cache-1", 90))
@@ -161,6 +167,7 @@ func TestAnAnnotationForcesOneFailoverWithoutItsQuorum(t *testing.T) {
 }
 
 func TestAForcedFailoverStillNeverNamesAnInstanceWithoutData(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	h.failQuorum(3, 1)
 	h.annotate(forceFailoverAnnotation, "true")
@@ -175,6 +182,7 @@ func TestAForcedFailoverStillNeverNamesAnInstanceWithoutData(t *testing.T) {
 // Only the value true forces a failover, so a mistyped value leaves the
 // quorum in place.
 func TestAnAnnotationOtherThanTrueForcesNothing(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	h.failQuorum(3, 1)
 	h.annotate(forceFailoverAnnotation, "yes")
@@ -190,6 +198,7 @@ func TestAnAnnotationOtherThanTrueForcesNothing(t *testing.T) {
 // write, so while a scale-down leaves more pods than spec.instances,
 // it counts the pods.
 func TestTheQuorumCountsThePodsAScaleDownHasNotRemoved(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	h.failQuorum(3, 1)
 	h.setInstances(2)
@@ -207,6 +216,7 @@ func TestTheQuorumCountsThePodsAScaleDownHasNotRemoved(t *testing.T) {
 // The old primary, once reachable and detached with its data, is one of
 // the instances the quorum counts, so its return completes the quorum.
 func TestAnOldPrimaryThatComesBackWithItsDataCompletesTheQuorum(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	h.failQuorum(3, 1)
 	h.holdLease("")

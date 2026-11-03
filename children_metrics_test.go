@@ -56,6 +56,7 @@ func templateContainers(t *testing.T, spec RedisSpec) map[string]templateContain
 func enabled(on bool) *bool { return &on }
 
 func TestTheExporterRunsBesideEveryInstanceUnlessDisabled(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		metrics *MetricsSpec
@@ -78,6 +79,7 @@ func TestTheExporterRunsBesideEveryInstanceUnlessDisabled(t *testing.T) {
 }
 
 func TestTheExporterServesOnThePortNamedMetrics(t *testing.T) {
+	t.Parallel()
 	exporter := templateContainers(t, RedisSpec{})[exporterContainer]
 
 	mustMatch(t, len(exporter.Ports), 1)
@@ -86,6 +88,7 @@ func TestTheExporterServesOnThePortNamedMetrics(t *testing.T) {
 }
 
 func TestTheExporterScrapesItsOwnInstanceWithThePassword(t *testing.T) {
+	t.Parallel()
 	exporter := templateContainers(t, RedisSpec{})[exporterContainer]
 
 	mustMatch(t, flagValue(exporter.Args, "-redis.addr"), "redis://127.0.0.1:6379")
@@ -96,6 +99,7 @@ func TestTheExporterScrapesItsOwnInstanceWithThePassword(t *testing.T) {
 }
 
 func TestTheExporterImageIsPinnedUnlessTheSpecNamesOne(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		metrics *MetricsSpec
@@ -125,6 +129,7 @@ func flagValue(args []string, name string) string {
 }
 
 func TestTheExporterChecksTheSingleKeysTheSpecNames(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		keys []string

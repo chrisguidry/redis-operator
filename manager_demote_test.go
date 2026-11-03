@@ -74,8 +74,10 @@ func mustBeDisconnected(t *testing.T, err error) {
 }
 
 func TestASwitchoverHoldsWritesUntilThePodLosesThePrimaryLabelThenDisconnectsTheClients(t *testing.T) {
+	t.Parallel()
 	for _, engine := range engines {
 		t.Run(engine, func(t *testing.T) {
+			t.Parallel()
 			h := twoInstances(t, engine)
 			h.labelRole("cache-0", rolePrimary)
 			early := h.connect("cache-0")
@@ -105,8 +107,10 @@ func TestASwitchoverHoldsWritesUntilThePodLosesThePrimaryLabelThenDisconnectsThe
 // refuses writes with NOREPLICAS while it steps down. Its clients stay
 // connected until its pod loses the primary label.
 func TestAPrimaryThatStepsDownForAFailoverDisconnectsItsClientsOnceThePodLosesThePrimaryLabel(t *testing.T) {
+	t.Parallel()
 	for _, engine := range engines {
 		t.Run(engine, func(t *testing.T) {
+			t.Parallel()
 			h := twoInstances(t, engine)
 			h.labelRole("cache-0", rolePrimary)
 			conn := h.connect("cache-0")
@@ -133,8 +137,10 @@ func TestAPrimaryThatStepsDownForAFailoverDisconnectsItsClientsOnceThePodLosesTh
 // clients. A write meanwhile is refused for want of replicas, never
 // with READONLY.
 func TestAFencedPrimaryThatCannotReadItsLabelDisconnectsItsClients(t *testing.T) {
+	t.Parallel()
 	for _, engine := range engines {
 		t.Run(engine, func(t *testing.T) {
+			t.Parallel()
 			h := twoInstances(t, engine)
 			h.labelRole("cache-0", rolePrimary)
 			conn := h.connect("cache-0")
@@ -195,8 +201,10 @@ func (h *managerHarness) reconnectingWriter(name string, stop <-chan struct{}) <
 // reach it until routing moves. It holds their writes as a primary until
 // then, and none is answered READONLY.
 func TestAPrimaryThatFindsAnotherHolderAnswersNoWriteWithReadonly(t *testing.T) {
+	t.Parallel()
 	for _, engine := range engines {
 		t.Run(engine, func(t *testing.T) {
+			t.Parallel()
 			h := twoInstances(t, engine)
 			h.labelRole("cache-0", rolePrimary)
 			stop := make(chan struct{})
@@ -219,6 +227,7 @@ func TestAPrimaryThatFindsAnotherHolderAnswersNoWriteWithReadonly(t *testing.T) 
 }
 
 func TestADemotedInstanceThatIsPrimaryAgainAcceptsWrites(t *testing.T) {
+	t.Parallel()
 	h := twoInstances(t, "redis")
 	h.labelRole("cache-0", rolePrimary)
 	h.setTarget(targetPending)
@@ -242,6 +251,7 @@ func TestADemotedInstanceThatIsPrimaryAgainAcceptsWrites(t *testing.T) {
 }
 
 func TestAReplicaKeepsItsClientsConnected(t *testing.T) {
+	t.Parallel()
 	h := twoInstances(t, "redis")
 	h.labelRole("cache-0", rolePrimary)
 	h.labelRole("cache-1", roleReplica)
@@ -259,6 +269,7 @@ func TestAReplicaKeepsItsClientsConnected(t *testing.T) {
 // a FAILOVER to the next primary would fail; it detaches and releases
 // the Lease instead.
 func TestAHolderThatAFailoverPassedOverDetachesAndReleasesTheLease(t *testing.T) {
+	t.Parallel()
 	h := twoInstances(t, "redis")
 	h.labelRole("cache-0", rolePrimary)
 	h.setTarget(targetPending)

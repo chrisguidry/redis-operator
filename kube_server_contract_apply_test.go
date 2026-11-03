@@ -20,6 +20,7 @@ func labeledWidget(t *testing.T, namespace, name string, labels map[string]strin
 }
 
 func TestFakeKubeListsOnlyTheSelectedObjects(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	api.create(widgets, labeledWidget(t, "shop", "gear", map[string]string{"team": "a"}))
 	api.create(widgets, labeledWidget(t, "shop", "bolt", map[string]string{"team": "b"}))
@@ -33,6 +34,7 @@ func TestFakeKubeListsOnlyTheSelectedObjects(t *testing.T) {
 }
 
 func TestFakeKubeWatchStreamsOnlyTheSelectedObjects(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	resp, err := api.client.watch(t.Context(), widgets, "", "team=a", "0")
 	mustSucceed(t, err)
@@ -51,6 +53,7 @@ func TestFakeKubeWatchStreamsOnlyTheSelectedObjects(t *testing.T) {
 }
 
 func TestFakeKubeApplyCreatesAnObject(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 
 	var got widget
@@ -70,6 +73,7 @@ func TestFakeKubeApplyCreatesAnObject(t *testing.T) {
 // fields only another writer set, and removes a field it stated before
 // and does not state now.
 func TestFakeKubeApplyTakesOverAnObject(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	gear := newWidget("shop", "gear")
 	gear.Spec = map[string]any{"size": "large", "color": "red"}
@@ -86,6 +90,7 @@ func TestFakeKubeApplyTakesOverAnObject(t *testing.T) {
 }
 
 func TestFakeKubeApplyOfTheSameObjectChangesNothing(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	mustSucceed(t, api.client.apply(t.Context(), widgets, "shop", "gear", newWidget("shop", "gear"), nil))
 
@@ -96,6 +101,7 @@ func TestFakeKubeApplyOfTheSameObjectChangesNothing(t *testing.T) {
 }
 
 func TestFakeKubeDeletesAnObjectThroughTheClient(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	api.create(widgets, newWidget("shop", "gear"))
 
@@ -106,6 +112,7 @@ func TestFakeKubeDeletesAnObjectThroughTheClient(t *testing.T) {
 }
 
 func TestFakeKubeAnswersNotFoundToADeleteOfAMissingObject(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 
 	err := api.client.delete(t.Context(), widgets, "shop", "gear", "uid-1", "")
@@ -117,6 +124,7 @@ func TestFakeKubeAnswersNotFoundToADeleteOfAMissingObject(t *testing.T) {
 // matching it, as the API server's watch cache does, so the client's
 // store drops an object it no longer selects.
 func TestFakeKubeWatchDeletesAnObjectThatLosesItsLabel(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	api.create(widgets, labeledWidget(t, "shop", "gear", map[string]string{"team": "a"}))
 	resp, err := api.client.watch(t.Context(), widgets, "", "team=a", "1")
@@ -138,6 +146,7 @@ func TestFakeKubeWatchDeletesAnObjectThatLosesItsLabel(t *testing.T) {
 // A delete states the uid it read. An object made again under the same
 // name has another uid, and the API server refuses to delete it.
 func TestFakeKubeRefusesADeleteOfAnotherUID(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	api.create(widgets, newWidget("shop", "gear"))
 
@@ -148,6 +157,7 @@ func TestFakeKubeRefusesADeleteOfAnotherUID(t *testing.T) {
 }
 
 func TestFakeKubeAnswersARefusedRequest(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	api.create(widgets, newWidget("shop", "gear"))
 	api.refuse("DELETE", "/apis/example.com/v1/namespaces/shop/widgets/gear", http.StatusForbidden)

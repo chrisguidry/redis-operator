@@ -19,6 +19,7 @@ func waitingPod(reasons map[string]string) Pod {
 }
 
 func TestAWaitingReasonNamesAContainerOtherThanTheServer(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		reasons map[string]string

@@ -12,6 +12,7 @@ import (
 )
 
 func TestFakeKubeCreatesAnObjectThroughTheClient(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 
 	var got widget
@@ -24,6 +25,7 @@ func TestFakeKubeCreatesAnObjectThroughTheClient(t *testing.T) {
 }
 
 func TestFakeKubeRefusesACreateOfANameThatExists(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	api.create(widgets, newWidget("shop", "gear"))
 
@@ -33,6 +35,7 @@ func TestFakeKubeRefusesACreateOfANameThatExists(t *testing.T) {
 }
 
 func TestFakeKubeMergesAPatchAtTheVersionTheClientRead(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	api.create(widgets, newWidget("shop", "gear"))
 
@@ -47,6 +50,7 @@ func TestFakeKubeMergesAPatchAtTheVersionTheClientRead(t *testing.T) {
 }
 
 func TestFakeKubeRefusesAMergePatchAtAnOldVersion(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	api.create(widgets, newWidget("shop", "gear"))
 	api.update(widgets, "shop", "gear", func(object map[string]any) {
@@ -62,6 +66,7 @@ func TestFakeKubeRefusesAMergePatchAtAnOldVersion(t *testing.T) {
 }
 
 func TestFakeKubeNamesACreateFromItsGenerateName(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 
 	var got widget
@@ -76,6 +81,7 @@ func TestFakeKubeNamesACreateFromItsGenerateName(t *testing.T) {
 }
 
 func TestFakeKubeHoldsARequestItHangsUntilTheClientGivesUp(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	api.hang("POST", widgets.path("shop", ""))
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)

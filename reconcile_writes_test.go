@@ -26,6 +26,7 @@ func (h *harness) addInstance(i int) {
 }
 
 func TestAScaleUpRaisesMinReplicasToWriteOnlyOnceAReplicaHasSynced(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 1)
 	h.steady("cache-0", 1)
 	h.pass()
@@ -51,6 +52,7 @@ func TestAScaleUpRaisesMinReplicasToWriteOnlyOnceAReplicaHasSynced(t *testing.T)
 }
 
 func TestMinReplicasToWriteStaysUpWhenTheReplicasGoAway(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	h.steady("cache-0", 3)
 	h.pass()
@@ -64,6 +66,7 @@ func TestMinReplicasToWriteStaysUpWhenTheReplicasGoAway(t *testing.T) {
 }
 
 func TestMinReplicasToWriteFollowsTheSpecDown(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	h.steady("cache-0", 3)
 	h.pass()
@@ -75,6 +78,7 @@ func TestMinReplicasToWriteFollowsTheSpecDown(t *testing.T) {
 }
 
 func TestANewRedisStartsWithTheMinReplicasToWriteOfItsSpec(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 
 	h.pass()

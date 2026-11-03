@@ -50,13 +50,29 @@ servers: $(SERVERS)/.images
 # running e2e leaves files only root can read.
 GO_DIRS = $$(go list -f '{{.Dir}}' ./...)
 
+# test-go is the whole gate. CI runs its three parts as parallel jobs.
 .PHONY: test-go
-test-go: servers
+test-go: lint test-race test-coverage
+
+.PHONY: lint
+lint:
 	test -z "$$(gofmt -l $(GO_DIRS))" || { gofmt -l $(GO_DIRS); exit 1; }
 	test -z "$$($(UNTESTED_PACKAGES))" || { echo 'packages with no test file:'; $(UNTESTED_PACKAGES); exit 1; }
 	go vet ./...
-	go test -race -timeout 30m ./...
-	GOTOOLCHAIN=$(COVERAGE_TOOLCHAIN) go test -timeout 30m -coverprofile=coverage.out ./...
+	kubectl kustomize deploy > /dev/null
+
+# The tests run in parallel, and most of their time is spent waiting on
+# real servers and the managers' timings rather than on the CPU, so
+# they run more at once than there are cores.
+TEST_PARALLEL := 16
+
+.PHONY: test-race
+test-race: servers
+	go test -race -parallel $(TEST_PARALLEL) -timeout 15m ./...
+
+.PHONY: test-coverage
+test-coverage: servers
+	GOTOOLCHAIN=$(COVERAGE_TOOLCHAIN) go test -parallel $(TEST_PARALLEL) -timeout 15m -coverprofile=coverage.out ./...
 	GOTOOLCHAIN=$(COVERAGE_TOOLCHAIN) go tool go-test-coverage --config=.testcoverage.yml
 
 # The report draws the profile that the gate measured as one HTML page.
@@ -67,7 +83,7 @@ coverage-report: coverage.out
 	GOTOOLCHAIN=$(COVERAGE_TOOLCHAIN) go tool cover -html=coverage.out -o coverage.html
 
 coverage.out:
-	$(MAKE) test-go
+	$(MAKE) test-coverage
 
 # e2e is not part of test: it needs Docker and kubectl, and it stands up
 # a four-node k3s cluster in containers. It runs as its own jobs in CI,

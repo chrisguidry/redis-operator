@@ -43,6 +43,7 @@ func sourceOffsetOf(t *testing.T, source *testServer) int64 {
 }
 
 func TestANewRedisNamingASourceReplicatesAndReportsItsLag(t *testing.T) {
+	t.Parallel()
 	source := startSource(t, "redis")
 	host, port := sourceHostPort(source)
 	h := startHarness(t, 2)
@@ -59,6 +60,7 @@ func TestANewRedisNamingASourceReplicatesAndReportsItsLag(t *testing.T) {
 }
 
 func TestPromotionPausesTheSourceAndWaitsForTheHolder(t *testing.T) {
+	t.Parallel()
 	source := startSource(t, "redis")
 	_, err := sourceClient(t, source).do(context.Background(), "SET", "before", "cutover")
 	mustSucceed(t, err)
@@ -87,6 +89,7 @@ func TestPromotionPausesTheSourceAndWaitsForTheHolder(t *testing.T) {
 }
 
 func TestPromotionWithASourceNeitherTheOperatorNorTheHolderReachesPromotesAtOnce(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 2)
 	port := freePort(t)
 	h.replicaOf("127.0.0.1", port, true)
@@ -104,6 +107,7 @@ func TestPromotionWithASourceNeitherTheOperatorNorTheHolderReachesPromotesAtOnce
 // as when a NetworkPolicy admits only the Redis pods, so a holder with
 // its link up says the source is alive and may still take writes.
 func TestPromotionWithASourceOnlyTheHolderReachesWaits(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 2)
 	port := freePort(t)
 	h.replicaOf("127.0.0.1", port, true)
@@ -122,6 +126,7 @@ func TestPromotionWithASourceOnlyTheHolderReachesWaits(t *testing.T) {
 }
 
 func TestReplicaModeDoesNotStartOnARedisThatServed(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 2)
 	h.steady("cache-0", 2)
 	h.pass()
@@ -143,6 +148,7 @@ func (h *harness) adoptingHolderUnlinked(sourceHost string) {
 }
 
 func TestAPromotionThatDoesNotCatchUpWithinThePauseDoesNotPromote(t *testing.T) {
+	t.Parallel()
 	source := startSource(t, "redis")
 	host, port := sourceHostPort(source)
 	h := startHarness(t, 2)
@@ -163,6 +169,7 @@ func TestAPromotionThatDoesNotCatchUpWithinThePauseDoesNotPromote(t *testing.T) 
 }
 
 func TestAPromotionThatTimedOutPausesTheSourceAgainAfterTheBackoff(t *testing.T) {
+	t.Parallel()
 	source := startSource(t, "redis")
 	host, port := sourceHostPort(source)
 	h := startHarness(t, 2)
@@ -195,6 +202,7 @@ func refuseClientCommands(t *testing.T, source *testServer, refuse bool) {
 }
 
 func TestASourceThatRefusesThePauseIsNotPromotedFrom(t *testing.T) {
+	t.Parallel()
 	source := startSource(t, "redis")
 	refuseClientCommands(t, source, true)
 	host, port := sourceHostPort(source)
@@ -216,6 +224,7 @@ func TestASourceThatRefusesThePauseIsNotPromotedFrom(t *testing.T) {
 }
 
 func TestASourceThatRefusedThePauseIsPausedAgainAfterTheBackoff(t *testing.T) {
+	t.Parallel()
 	source := startSource(t, "redis")
 	refuseClientCommands(t, source, true)
 	host, port := sourceHostPort(source)
@@ -251,6 +260,7 @@ func (h *harness) promoteFrom(host string, port int, secret string) {
 }
 
 func TestASourceThatRefusesThePasswordIsNotPromotedFrom(t *testing.T) {
+	t.Parallel()
 	source := startSource(t, "redis")
 	host, port := sourceHostPort(source)
 	h := startHarness(t, 2)
@@ -270,6 +280,7 @@ func TestASourceThatRefusesThePasswordIsNotPromotedFrom(t *testing.T) {
 }
 
 func TestAPromotionWhosePasswordSecretIsMissingWaits(t *testing.T) {
+	t.Parallel()
 	source := startSource(t, "redis")
 	host, port := sourceHostPort(source)
 	h := startHarness(t, 2)
@@ -284,6 +295,7 @@ func TestAPromotionWhosePasswordSecretIsMissingWaits(t *testing.T) {
 }
 
 func TestTheOperatorFindsTheSourceThroughASentinelWithAPassword(t *testing.T) {
+	t.Parallel()
 	source := startSource(t, "redis")
 	sentinel := startSentinel(t, source, sentinelPassword)
 	host, port := sourceHostPort(source)
@@ -313,6 +325,7 @@ func TestTheOperatorFindsTheSourceThroughASentinelWithAPassword(t *testing.T) {
 // While a Redis replicates, its source holds the dataset, so instances
 // that all restart empty copy it again and lose nothing.
 func TestAReplicatingRedisWhoseInstancesRestartEmptyCopiesTheSourceAgain(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 1)
 	h.replicaOf("127.0.0.1", freePort(t), true)
 	h.pass()

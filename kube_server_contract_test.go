@@ -15,6 +15,7 @@ import (
 )
 
 func TestFakeKubeGetsAnObjectThatATestCreated(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	api.create(widgets, newWidget("shop", "gear"))
 
@@ -29,6 +30,7 @@ func TestFakeKubeGetsAnObjectThatATestCreated(t *testing.T) {
 }
 
 func TestFakeKubeAnswersNotFoundForAMissingObject(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 
 	err := api.client.get(t.Context(), widgets, "shop", "gear", &widget{})
@@ -37,6 +39,7 @@ func TestFakeKubeAnswersNotFoundForAMissingObject(t *testing.T) {
 }
 
 func TestFakeKubeListsOneNamespaceOrAll(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		namespace string
 		names     string
@@ -73,6 +76,7 @@ func widgetNames(items []widget) string {
 }
 
 func TestFakeKubeServesCoreResources(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	configMaps := kubeResource{Version: "v1", Resource: "configmaps"}
 	api.create(configMaps, map[string]any{"metadata": map[string]any{"namespace": "shop", "name": "settings"}, "data": map[string]any{"color": "blue"}})
@@ -87,6 +91,7 @@ func TestFakeKubeServesCoreResources(t *testing.T) {
 }
 
 func TestFakeKubeIncrementsGenerationOnlyForASpecChange(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		change     func(object map[string]any)
@@ -135,6 +140,7 @@ func openWidgetWatch(t *testing.T, api *fakeKube, namespace, resourceVersion str
 }
 
 func TestFakeKubeWatchStreamsChangesAfterAVersion(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	api.create(widgets, newWidget("shop", "gear"))
 	api.create(widgets, newWidget("garage", "nut"))
@@ -154,6 +160,7 @@ func TestFakeKubeWatchStreamsChangesAfterAVersion(t *testing.T) {
 }
 
 func TestFakeKubeWatchFromZeroStartsWithEveryObject(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	api.create(widgets, newWidget("shop", "gear"))
 	next := openWidgetWatch(t, api, "", "0")
@@ -167,6 +174,7 @@ func TestFakeKubeWatchFromZeroStartsWithEveryObject(t *testing.T) {
 }
 
 func TestFakeKubeWatchFromACompactedVersionIsGone(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	api.create(widgets, newWidget("shop", "gear"))
 	api.create(widgets, newWidget("shop", "bolt"))
@@ -188,6 +196,7 @@ func TestFakeKubeWatchFromACompactedVersionIsGone(t *testing.T) {
 }
 
 func TestFakeKubeSetsFinalizersAtTheVersionTheClientRead(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	api.create(widgets, newWidget("shop", "gear"))
 
@@ -202,6 +211,7 @@ func TestFakeKubeSetsFinalizersAtTheVersionTheClientRead(t *testing.T) {
 }
 
 func TestFakeKubeRefusesFinalizersAtAnOldVersion(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	api.create(widgets, newWidget("shop", "gear"))
 	api.update(widgets, "shop", "gear", func(object map[string]any) { object["spec"] = map[string]any{"size": "large"} })
@@ -215,6 +225,7 @@ func TestFakeKubeRefusesFinalizersAtAnOldVersion(t *testing.T) {
 }
 
 func TestFakeKubeDeletesAnObjectWithNoFinalizers(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	api.create(widgets, newWidget("shop", "gear"))
 
@@ -224,6 +235,7 @@ func TestFakeKubeDeletesAnObjectWithNoFinalizers(t *testing.T) {
 }
 
 func TestFakeKubeKeepsADeletedObjectUntilTheLastFinalizerIsRemoved(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	gear := newWidget("shop", "gear")
 	gear.Metadata.Finalizers = []string{"example.com/one", "example.com/two"}
@@ -242,6 +254,7 @@ func TestFakeKubeKeepsADeletedObjectUntilTheLastFinalizerIsRemoved(t *testing.T)
 }
 
 func TestFakeKubeRefusesANewFinalizerOnADeletedObject(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	gear := newWidget("shop", "gear")
 	gear.Metadata.Finalizers = []string{"example.com/one"}
@@ -254,6 +267,7 @@ func TestFakeKubeRefusesANewFinalizerOnADeletedObject(t *testing.T) {
 }
 
 func TestFakeKubeAppliesStatusAndKeepsTheSpec(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	api.create(widgets, newWidget("shop", "gear"))
 
@@ -275,6 +289,7 @@ func TestFakeKubeAppliesStatusAndKeepsTheSpec(t *testing.T) {
 // applied before and leaves out now is removed, the way server-side
 // apply removes it.
 func TestFakeKubeApplyRemovesOnlyTheFieldsTheManagerDropped(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	gear := newWidget("shop", "gear")
 	gear.Status = map[string]any{"owner": "someone else"}
@@ -292,6 +307,7 @@ func TestFakeKubeApplyRemovesOnlyTheFieldsTheManagerDropped(t *testing.T) {
 }
 
 func TestFakeKubeApplyOfTheSameStatusChangesNothing(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	api.create(widgets, newWidget("shop", "gear"))
 	status := map[string]any{"color": "blue"}
@@ -306,6 +322,7 @@ func TestFakeKubeApplyOfTheSameStatusChangesNothing(t *testing.T) {
 // This is the shape of a reconciler test: seed an object, run the
 // writes one pass makes, and read back the finalizers and the status.
 func TestFakeKubeHoldsTheResultOfAPass(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	api.create(widgets, newWidget("shop", "gear"))
 

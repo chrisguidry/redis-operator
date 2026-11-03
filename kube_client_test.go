@@ -15,6 +15,7 @@ import (
 )
 
 func TestKubeResourcePaths(t *testing.T) {
+	t.Parallel()
 	jobs := kubeResource{Group: "batch", Version: "v1", Resource: "jobs"}
 	secrets := kubeResource{Version: "v1", Resource: "secrets"}
 	projects := kubeResource{Group: "redis.guid.foo", Version: "v1alpha1", Resource: "redis"}
@@ -95,6 +96,7 @@ func testKubeClient(t *testing.T, handler http.HandlerFunc) *kubeClient {
 // The API server answers 429 while it starts the storage for a new
 // CRD. The client waits and asks again.
 func TestAThrottledRequestIsAskedAgain(t *testing.T) {
+	t.Parallel()
 	answers := 0
 	client := testKubeClient(t, func(w http.ResponseWriter, r *http.Request) {
 		answers++
@@ -114,6 +116,7 @@ func TestAThrottledRequestIsAskedAgain(t *testing.T) {
 }
 
 func TestRetryAfterReadsSeconds(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		header string
 		want   time.Duration
@@ -133,6 +136,7 @@ func TestRetryAfterReadsSeconds(t *testing.T) {
 // An error includes the API server's own message, so a log line or a
 // status condition says what went wrong.
 func TestAnErrorIncludesTheServersMessage(t *testing.T) {
+	t.Parallel()
 	client := testKubeClient(t, func(w http.ResponseWriter, r *http.Request) {
 		writeKubeStatus(w, http.StatusForbidden, `secrets "api-key" is forbidden`)
 	})

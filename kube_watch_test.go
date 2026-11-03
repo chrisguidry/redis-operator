@@ -11,6 +11,7 @@ import (
 )
 
 func TestReadWatchEventsKeepsTheStore(t *testing.T) {
+	t.Parallel()
 	const (
 		added    = `{"type":"ADDED","object":{"metadata":{"namespace":"shop","name":"gear","resourceVersion":"10"}}}`
 		modified = `{"type":"MODIFIED","object":{"metadata":{"namespace":"shop","name":"gear","resourceVersion":"12"}}}`
@@ -134,6 +135,7 @@ func waitForWatchFrom(t *testing.T, api *fakeKube, resourceVersion string) {
 }
 
 func TestAChangeWakesTheLoop(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	watch := startWidgetWatch(t, api.client, "0")
 	waitForWatchFrom(t, api, "0")
@@ -144,6 +146,7 @@ func TestAChangeWakesTheLoop(t *testing.T) {
 }
 
 func TestTheWatchAsksForBookmarks(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	startWidgetWatch(t, api.client, "0")
 	waitForWatchFrom(t, api, "0")
@@ -154,6 +157,7 @@ func TestTheWatchAsksForBookmarks(t *testing.T) {
 // A create, an update, and a delete in the cluster each reach the
 // store through the watch.
 func TestChangesReachTheStore(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		change func(api *fakeKube)
@@ -201,6 +205,7 @@ func widgetSizes(t *testing.T, store *objectStore) map[string]string {
 // A dropped stream lists the collection, wakes the loop, and watches
 // again from the list's resourceVersion.
 func TestADroppedWatchRelistsAndResumes(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	watch := startWidgetWatch(t, api.client, "0")
 	waitForWatchFrom(t, api, "0")
@@ -221,6 +226,7 @@ func TestADroppedWatchRelistsAndResumes(t *testing.T) {
 // watch to read. The list after the drop replaces the store, so the
 // object is gone from it.
 func TestADeleteWhileTheStreamIsDownLeavesTheStore(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	api.create(widgets, newWidget("shop", "gear"))
 	api.create(widgets, newWidget("shop", "bolt"))
@@ -242,6 +248,7 @@ func TestADeleteWhileTheStreamIsDownLeavesTheStore(t *testing.T) {
 // The watch lists again for a current one, and the list replaces the
 // store.
 func TestAGoneWatchRelistsAndResumes(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	api.create(widgets, newWidget("shop", "gear"))
 	watch := newWidgetWatch(api.client)
@@ -260,6 +267,7 @@ func TestAGoneWatchRelistsAndResumes(t *testing.T) {
 // A refused watch or a failed list is tried again, with a wait between
 // tries.
 func TestARefusedWatchIsTriedAgain(t *testing.T) {
+	t.Parallel()
 	var watches atomic.Int32
 	client := testKubeClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("watch") == "true" {

@@ -6,6 +6,7 @@ import (
 )
 
 func TestRulesSplitOnSpacesAndKeepSelectorsWhole(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		rules string
 		want  []string
@@ -25,6 +26,7 @@ func TestRulesSplitOnSpacesAndKeepSelectorsWhole(t *testing.T) {
 }
 
 func TestSetUserReplacesTheWholeUserWithAHashedPassword(t *testing.T) {
+	t.Parallel()
 	user := RedisUser{Name: "app", Rules: "~app:* +@all"}
 
 	got := user.setUser("secret")

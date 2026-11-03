@@ -14,9 +14,29 @@ REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 E2E_DIR="$REPO_ROOT/e2e"
 ENGINE=${ENGINE:-redis}
 NS=e2e
-# SCENARIOS names the scenarios to run, in order, such as
-# SCENARIOS=adoption to run one of them alone.
-SCENARIOS=${SCENARIOS:-delete_primary drain_primary_node operator_down freeze_primary partition_primary partition_primary_from_peers metrics acl_users tls backup_restore backup_restore_volume adoption rollout scale scale_during_failover scale_while_the_primary_dies single_instance upgrade broken_image}
+# The scenarios fall into shards. Each shard stands up its own cluster,
+# so CI runs the shards as parallel jobs. A shard's scenarios run in the
+# order listed, and each starts from the state the one before it left.
+declare -A SHARDS=(
+  [failover]="delete_primary drain_primary_node operator_down freeze_primary partition_primary partition_primary_from_peers"
+  [access]="metrics acl_users tls backup_restore adoption"
+  [backup_volume]="backup_restore_volume rollout"
+  [scale]="scale scale_during_failover scale_while_the_primary_dies single_instance"
+  [upgrade]="upgrade broken_image"
+)
+SHARD_ORDER="failover access backup_volume scale upgrade"
+# SHARD runs one shard. SCENARIOS names the scenarios to run, in order,
+# such as SCENARIOS=adoption to run one of them alone. With neither,
+# every shard runs, one after another, on one cluster.
+if [ -n "${SHARD:-}" ]; then
+  [ -n "${SHARDS[$SHARD]:-}" ] || { echo "there is no shard named $SHARD; the shards are $SHARD_ORDER" >&2; exit 1; }
+  SCENARIOS=${SHARDS[$SHARD]}
+fi
+if [ -z "${SCENARIOS:-}" ]; then
+  for shard in $SHARD_ORDER; do
+    SCENARIOS="${SCENARIOS:-} ${SHARDS[$shard]}"
+  done
+fi
 
 # shellcheck source=common.sh disable=SC1091
 source "$E2E_DIR/common.sh"

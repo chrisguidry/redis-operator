@@ -27,6 +27,7 @@ func (h *harness) secretData() map[string]string {
 }
 
 func TestARedisWithAnIssuerGetsACertificate(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 1)
 	h.editSpec(func(spec map[string]any) {
 		spec["tls"] = map[string]any{"issuerRef": map[string]any{"name": "ca", "kind": "ClusterIssuer"}}
@@ -46,6 +47,7 @@ func TestARedisWithAnIssuerGetsACertificate(t *testing.T) {
 }
 
 func TestMovingToAUsersOwnSecretDeletesTheCertificate(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 1)
 	h.editSpec(func(spec map[string]any) {
 		spec["tls"] = map[string]any{"issuerRef": map[string]any{"name": "ca"}}
@@ -63,6 +65,7 @@ func TestMovingToAUsersOwnSecretDeletesTheCertificate(t *testing.T) {
 // and the rest of the pass still runs, so a running Redis keeps its
 // failover.
 func TestAMissingCertManagerFailsOnlyTheCertificate(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 1)
 	h.api.refuse("PATCH", certificatesResource.path(testNamespace, "cache-tls"), 404)
 	h.editSpec(func(spec map[string]any) {
@@ -77,6 +80,7 @@ func TestAMissingCertManagerFailsOnlyTheCertificate(t *testing.T) {
 }
 
 func TestTheManagersMayReadTheUsersAndTheCertificatesSecrets(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 1)
 	h.editSpec(func(spec map[string]any) {
 		spec["users"] = []any{
@@ -105,6 +109,7 @@ func TestTheManagersMayReadTheUsersAndTheCertificatesSecrets(t *testing.T) {
 }
 
 func TestTurningTLSOnAndOffRewritesTheConnectionSecretAndKeepsItsPassword(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 1)
 	h.pass()
 	password := h.secretData()["password"]

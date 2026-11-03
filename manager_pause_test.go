@@ -27,6 +27,7 @@ func statusCode(t *testing.T, m *manager, path string) int {
 // moved on. Each case beats the manager's watch at offsets before now
 // and takes a ready report at stepAt before now.
 func TestAPausedManagerReportsNothingUntilItStepsAgain(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		beats  []time.Duration

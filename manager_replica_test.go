@@ -67,8 +67,10 @@ func sourceHostPort(source *testServer) (string, int) {
 }
 
 func TestInReplicaModeTheHolderFollowsTheSourceAndTheRestFollowTheHolder(t *testing.T) {
+	t.Parallel()
 	for _, engine := range engines {
 		t.Run(engine, func(t *testing.T) {
+			t.Parallel()
 			source := startSource(t, engine)
 			_, err := sourceClient(t, source).do(context.Background(), "SET", "adopted", "yes")
 			mustSucceed(t, err)
@@ -93,6 +95,7 @@ func TestInReplicaModeTheHolderFollowsTheSourceAndTheRestFollowTheHolder(t *test
 }
 
 func TestPromotionMakesTheHolderTheWritablePrimary(t *testing.T) {
+	t.Parallel()
 	source := startSource(t, "redis")
 	h := startManagerHarness(t, "redis", 2)
 	host, port := sourceHostPort(source)
@@ -151,6 +154,7 @@ func startSentinel(t *testing.T, source *testServer, requirepass string) string 
 }
 
 func TestSourceAddressAsksASentinelWithItsOwnPassword(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name        string
 		requirepass string
@@ -179,6 +183,7 @@ func TestSourceAddressAsksASentinelWithItsOwnPassword(t *testing.T) {
 }
 
 func TestTheHolderFollowsThePrimaryASentinelNames(t *testing.T) {
+	t.Parallel()
 	source := startSource(t, "redis")
 	sentinel := startSentinel(t, source, "")
 	h := startManagerHarness(t, "redis", 1)
@@ -194,6 +199,7 @@ func TestTheHolderFollowsThePrimaryASentinelNames(t *testing.T) {
 }
 
 func TestTheHolderFollowsThePrimaryASentinelWithAPasswordNames(t *testing.T) {
+	t.Parallel()
 	source := startSource(t, "redis")
 	sentinel := startSentinel(t, source, sentinelPassword)
 	h := startManagerHarness(t, "redis", 1)

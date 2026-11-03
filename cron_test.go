@@ -6,6 +6,7 @@ import (
 )
 
 func TestTheNextRunOfASchedule(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 11, 2, 3, 30, 0, 0, time.UTC)
 	cases := []struct {
 		schedule string
@@ -29,6 +30,7 @@ func TestTheNextRunOfASchedule(t *testing.T) {
 }
 
 func TestABadScheduleIsRefused(t *testing.T) {
+	t.Parallel()
 	for _, schedule := range []string{"", "* * * *", "61 * * * *", "* * * * 8", "a * * * *", "*/0 * * * *", "5-2 * * * *"} {
 		t.Run(schedule, func(t *testing.T) {
 			_, err := parseCron(schedule)

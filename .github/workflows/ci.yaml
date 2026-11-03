@@ -17,9 +17,15 @@ permissions:
   contents: read
 
 jobs:
+  # The gate's three parts run as parallel jobs: the static checks, the
+  # race tests, and the coverage floor on its pinned toolchain.
   go:
     runs-on: ubuntu-26.04
-    timeout-minutes: 45
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [lint, test-race, test-coverage]
     steps:
       - uses: actions/checkout@v7
 
@@ -30,33 +36,28 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # The same target a workstation runs. The Makefile says why the
+      # The same targets a workstation runs. The Makefile says why the
       # coverage gate pins a toolchain, and .testcoverage.yml holds the
       # floor.
-      - run: make test-go
-
-      # The kustomize base must build as a consumer takes it.
-      - run: kubectl kustomize deploy > /dev/null
+      - run: make ${{ matrix.target }}
 
   # A k3s cluster of four nodes in Docker runs the operator built from
   # this checkout against each engine, while a writer confirms every
   # write with WAIT 1, and the chaos scenarios kill, drain, freeze, and
-  # roll the Redis. e2e/run.sh says what each scenario proves.
-  # ubuntu-26.04 already has Docker and kubectl.
-  e2e-redis:
+  # roll the Redis. e2e/run.sh says what each scenario proves, and
+  # groups them into the shards that run here as parallel jobs, each on
+  # its own cluster. ubuntu-26.04 already has Docker and kubectl.
+  e2e:
     runs-on: ubuntu-26.04
-    timeout-minutes: 70
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [redis, valkey]
+        shard: [failover, access, backup_volume, scale, upgrade]
     steps:
       - uses: actions/checkout@v7
       - run: make e2e
         env:
-          ENGINE: redis
-
-  e2e-valkey:
-    runs-on: ubuntu-26.04
-    timeout-minutes: 70
-    steps:
-      - uses: actions/checkout@v7
-      - run: make e2e
-        env:
-          ENGINE: valkey
+          ENGINE: ${{ matrix.engine }}
+          SHARD: ${{ matrix.shard }}

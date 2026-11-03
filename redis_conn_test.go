@@ -7,6 +7,7 @@ import (
 )
 
 func TestRedisConnAnswersEachReplyType(t *testing.T) {
+	t.Parallel()
 	for _, engine := range engines {
 		t.Run(engine, func(t *testing.T) {
 			c := startTestServer(t, engine).client(t)
@@ -39,6 +40,7 @@ func TestRedisConnAnswersEachReplyType(t *testing.T) {
 }
 
 func TestRedisConnReturnsTheServersErrorAsAReplyError(t *testing.T) {
+	t.Parallel()
 	c := startTestServer(t, "redis").client(t)
 
 	_, err := c.do(context.Background(), "NOSUCHCOMMAND")
@@ -53,6 +55,7 @@ func TestRedisConnReturnsTheServersErrorAsAReplyError(t *testing.T) {
 }
 
 func TestDialRedisRefusesAWrongPassword(t *testing.T) {
+	t.Parallel()
 	server := startTestServer(t, "redis")
 
 	_, err := dialRedis(context.Background(), server.addr, "wrong")
@@ -63,6 +66,7 @@ func TestDialRedisRefusesAWrongPassword(t *testing.T) {
 }
 
 func TestReplicationInfoReadsTheReplicationSection(t *testing.T) {
+	t.Parallel()
 	for _, engine := range engines {
 		t.Run(engine, func(t *testing.T) {
 			primary := startTestServer(t, engine)
@@ -85,6 +89,7 @@ func TestReplicationInfoReadsTheReplicationSection(t *testing.T) {
 }
 
 func TestReplicationInfoCountsOnlyTheReplicasThatFinishedTheirSync(t *testing.T) {
+	t.Parallel()
 	text := "# Replication\r\nrole:master\r\nconnected_slaves:2\r\n" +
 		"slave0:ip=10.0.0.2,port=6379,state=online,offset=100,lag=0\r\n" +
 		"slave1:ip=10.0.0.3,port=6379,state=wait_bgsave,offset=0,lag=0\r\n"

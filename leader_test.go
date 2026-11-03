@@ -76,6 +76,7 @@ func readLease(t *testing.T, api *fakeKube) Lease {
 }
 
 func TestACandidateCreatesTheLeaseAndLeads(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	e, _ := testElection(api, "a")
 
@@ -89,6 +90,7 @@ func TestACandidateCreatesTheLeaseAndLeads(t *testing.T) {
 }
 
 func TestALeaderRenewsTheLease(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	e, _ := testElection(api, "a")
 	c := startCandidate(t, e)
@@ -103,6 +105,7 @@ func TestALeaderRenewsTheLease(t *testing.T) {
 }
 
 func TestAStandbyWaitsWhileTheLeaderRenews(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	a, _ := testElection(api, "a")
 	waitFor(t, "a to lead", startCandidate(t, a).started)
@@ -124,6 +127,7 @@ func TestAStandbyWaitsWhileTheLeaderRenews(t *testing.T) {
 // A leader that stops releases the lease, so a standby takes it on its
 // next try instead of after a whole lease duration.
 func TestAStandbyTakesALeaseItsLeaderReleased(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	a, _ := testElection(api, "a")
 	leader := startCandidate(t, a)
@@ -146,6 +150,7 @@ func TestAStandbyTakesALeaseItsLeaderReleased(t *testing.T) {
 // that lost power does, is taken once it has not changed for a whole
 // lease duration, as the standby's own clock measures it.
 func TestAStandbyTakesALeaseItsHolderStoppedRenewing(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	api.create(leasesResource, Lease{
 		Metadata: ObjectMeta{Namespace: operatorNamespace, Name: leaseName},
@@ -164,6 +169,7 @@ func TestAStandbyTakesALeaseItsHolderStoppedRenewing(t *testing.T) {
 // A leader that cannot renew stops its work before the lease could
 // expire, so a standby that takes the lease never runs beside it.
 func TestALeaderThatCannotRenewStopsBeforeTheLeaseExpires(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	a, log := testElection(api, "a")
 	leader := startCandidate(t, a)
@@ -180,6 +186,7 @@ func TestALeaderThatCannotRenewStopsBeforeTheLeaseExpires(t *testing.T) {
 }
 
 func TestALeaderStopsAtOnceWhenAnotherTakesTheLease(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	a, _ := testElection(api, "a")
 	a.deadline = testTimeout
@@ -199,6 +206,7 @@ func TestALeaderStopsAtOnceWhenAnotherTakesTheLease(t *testing.T) {
 // A leader that loses the Lease waits as a standby, and leads again,
 // with new work, once the Lease is free.
 func TestALeaderThatLostTheLeaseLeadsAgainLater(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	a, _ := testElection(api, "a")
 	terms := make(chan struct{}, 2)
@@ -220,6 +228,7 @@ func TestALeaderThatLostTheLeaseLeadsAgainLater(t *testing.T) {
 }
 
 func TestServeReturnsWhenItsContextEnds(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	a, _ := testElection(api, "a")
 	ctx, stop := context.WithCancel(t.Context())
@@ -231,6 +240,7 @@ func TestServeReturnsWhenItsContextEnds(t *testing.T) {
 // Two candidates that create the Lease at once both see a Lease, and
 // the one whose create lost says nothing about a conflict.
 func TestACandidateThatLosesTheCreateWaits(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	a, _ := testElection(api, "a")
 	b, log := testElection(api, "b")
@@ -244,6 +254,7 @@ func TestACandidateThatLosesTheCreateWaits(t *testing.T) {
 }
 
 func TestALeaderReleasesTheLeaseWhenItStops(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	a, _ := testElection(api, "a")
 	leader := startCandidate(t, a)
@@ -256,6 +267,7 @@ func TestALeaderReleasesTheLeaseWhenItStops(t *testing.T) {
 }
 
 func TestAnErrorFromTheWorkEndsTheLeadership(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	a, _ := testElection(api, "a")
 	failed := errors.New("listing checks: forbidden")
@@ -269,6 +281,7 @@ func TestAnErrorFromTheWorkEndsTheLeadership(t *testing.T) {
 // A candidate stopped while it waits never leads, and leaves the Lease
 // to its holder.
 func TestACandidateStoppedWhileItWaitsDoesNotLead(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	a, _ := testElection(api, "a")
 	waitFor(t, "a to lead", startCandidate(t, a).started)
@@ -284,6 +297,7 @@ func TestACandidateStoppedWhileItWaitsDoesNotLead(t *testing.T) {
 // A candidate whose reads the API server refuses keeps trying, as one
 // whose RBAC rule has not arrived yet does.
 func TestACandidateKeepsTryingWhileTheAPIServerRefusesIt(t *testing.T) {
+	t.Parallel()
 	api := startFakeKube(t)
 	path := leasesResource.path(operatorNamespace, leaseName)
 	api.refuse("GET", path, 403)
@@ -298,12 +312,14 @@ func TestACandidateKeepsTryingWhileTheAPIServerRefusesIt(t *testing.T) {
 }
 
 func TestCandidateIdentitiesAreUnique(t *testing.T) {
+	t.Parallel()
 	first, second := candidateIdentity(os.Hostname), candidateIdentity(os.Hostname)
 
 	mustMatch(t, first != second, true)
 }
 
 func TestACandidateWithNoHostnameNamesThisOperator(t *testing.T) {
+	t.Parallel()
 	identity := candidateIdentity(func() (string, error) { return "", errors.New("no hostname") })
 
 	mustMatch(t, strings.HasPrefix(identity, "redis-operator_"), true)

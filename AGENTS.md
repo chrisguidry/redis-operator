@@ -82,10 +82,10 @@ the images the operator runs by default into `.servers/`, which needs
 Docker, and puts them on the tests' PATH. To run `go test` by hand, run
 `make servers` once and add `.servers` to PATH. `make test` runs
 `gofmt`, a check that every package has a test file, `go vet`,
-`go test -race`, and a coverage gate: `.testcoverage.yml` sets the floor
-and the Makefile pins the toolchain it measures on. CI runs the same
-target as `make test-go`, and then `kubectl kustomize deploy`. Run that
-last one yourself when you change `deploy/`.
+`go test -race`, a coverage gate, and `kubectl kustomize deploy`:
+`.testcoverage.yml` sets the floor and the Makefile pins the toolchain
+it measures on. CI runs the same gate as three parallel jobs, `make
+lint`, `make test-race`, and `make test-coverage`.
 
 `make e2e` is not part of `make test`. It needs Docker and kubectl,
 builds the operator image from this checkout, starts a k3s cluster of
@@ -94,8 +94,9 @@ that confirms each write with `WAIT 1`. The scenarios kill, drain,
 freeze, partition, back up, adopt, and upgrade it, and each checks that
 no confirmed write was lost. Set `ENGINE=redis` (the default) or
 `ENGINE=valkey`. It takes up to 30 minutes, keeps its working files in
-`.e2e/`, and removes its containers on exit. `e2e/run.sh` lists the
-scenarios in order. CI runs one job for each engine.
+`.e2e/`, and removes its containers on exit. `e2e/run.sh` groups the
+scenarios into shards, and `SHARD=scale make e2e` runs one of them on
+its own cluster. CI runs one job for each shard and engine.
 
 ## Privacy
 

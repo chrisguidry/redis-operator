@@ -202,6 +202,7 @@ func (h *managerHarness) waitFor(what string, done func() bool) {
 }
 
 func TestTheTargetTakesTheLeaseAndServesAsPrimary(t *testing.T) {
+	t.Parallel()
 	h := startManagerHarness(t, "redis", 1)
 	h.setTarget("cache-0")
 
@@ -217,6 +218,7 @@ func TestTheTargetTakesTheLeaseAndServesAsPrimary(t *testing.T) {
 }
 
 func TestThePrimaryReportsTheReplicasItStreamsTo(t *testing.T) {
+	t.Parallel()
 	h := twoInstances(t, "redis")
 
 	h.waitFor("cache-0 reports one synced replica", func() bool { return h.report("cache-0").SyncedReplicas == 1 })
@@ -224,8 +226,10 @@ func TestThePrimaryReportsTheReplicasItStreamsTo(t *testing.T) {
 }
 
 func TestAnInstanceThatIsNotTheTargetFollowsTheHolder(t *testing.T) {
+	t.Parallel()
 	for _, engine := range engines {
 		t.Run(engine, func(t *testing.T) {
+			t.Parallel()
 			h := startManagerHarness(t, engine, 2)
 			h.setTarget("cache-0")
 
@@ -260,8 +264,10 @@ func twoInstances(t *testing.T, engine string) *managerHarness {
 }
 
 func TestMovingTheTargetHandsThePrimaryRoleOver(t *testing.T) {
+	t.Parallel()
 	for _, engine := range engines {
 		t.Run(engine, func(t *testing.T) {
+			t.Parallel()
 			h := twoInstances(t, engine)
 
 			h.switchTo("cache-1")
@@ -285,8 +291,10 @@ func TestMovingTheTargetHandsThePrimaryRoleOver(t *testing.T) {
 // primary let go of that link while the Lease was empty, the new
 // primary would refuse writes with NOREPLICAS until it came back.
 func TestTheOldPrimaryKeepsStreamingFromTheNewOneAcrossASwitchover(t *testing.T) {
+	t.Parallel()
 	for _, engine := range engines {
 		t.Run(engine, func(t *testing.T) {
+			t.Parallel()
 			h := twoInstances(t, engine)
 
 			h.switchTo("cache-1")
@@ -319,6 +327,7 @@ func partialSyncs(t *testing.T, s *server) int {
 }
 
 func TestAPendingTargetDetachesEveryInstance(t *testing.T) {
+	t.Parallel()
 	h := twoInstances(t, "redis")
 
 	h.setTarget(targetPending)
@@ -329,6 +338,7 @@ func TestAPendingTargetDetachesEveryInstance(t *testing.T) {
 }
 
 func TestTheNewTargetTakesTheLeaseOfADeadPrimaryOnlyAfterItExpires(t *testing.T) {
+	t.Parallel()
 	h := twoInstances(t, "redis")
 	h.crash("cache-0")
 	h.setTarget(targetPending)
@@ -348,6 +358,7 @@ func TestTheNewTargetTakesTheLeaseOfADeadPrimaryOnlyAfterItExpires(t *testing.T)
 }
 
 func TestAnInstanceThatRestartsEmptyGivesUpThePrimaryLease(t *testing.T) {
+	t.Parallel()
 	h := twoInstances(t, "redis")
 
 	h.crash("cache-0")
@@ -364,8 +375,10 @@ func TestAnInstanceThatRestartsEmptyGivesUpThePrimaryLease(t *testing.T) {
 // manager reports such an instance as empty after a restart, so its
 // server must not load that snapshot and serve the keys in it.
 func TestAnInstanceWithNoStorageRestartsWithNoKeys(t *testing.T) {
+	t.Parallel()
 	for _, engine := range engines {
 		t.Run(engine, func(t *testing.T) {
+			t.Parallel()
 			h := twoInstances(t, engine)
 			primary := h.client("cache-0")
 			// SAVE refuses while a background save runs, such as the one
@@ -403,6 +416,7 @@ func (h *managerHarness) outage() {
 }
 
 func TestAPrimaryKeepsServingThroughAnAPIOutageWhileItsPeersAgree(t *testing.T) {
+	t.Parallel()
 	h := twoInstances(t, "redis")
 
 	h.outage()
@@ -414,6 +428,7 @@ func TestAPrimaryKeepsServingThroughAnAPIOutageWhileItsPeersAgree(t *testing.T) 
 }
 
 func TestAPrimaryThatCannotRenewAndCannotReachAPeerFencesItself(t *testing.T) {
+	t.Parallel()
 	h := twoInstances(t, "redis")
 
 	h.crash("cache-1")
@@ -425,6 +440,7 @@ func TestAPrimaryThatCannotRenewAndCannotReachAPeerFencesItself(t *testing.T) {
 }
 
 func TestAStoppingPrimaryAsksForASwitchoverAndHandsOver(t *testing.T) {
+	t.Parallel()
 	h := twoInstances(t, "redis")
 	stopped := make(chan struct{})
 	go func() {
@@ -450,6 +466,7 @@ func TestAStoppingPrimaryAsksForASwitchoverAndHandsOver(t *testing.T) {
 // A single instance has no replica to hand its role to, so it stops at
 // once instead of waiting for a switchover that cannot come.
 func TestAStoppingSingleInstanceStopsWithoutWaitingForAHandover(t *testing.T) {
+	t.Parallel()
 	h := startManagerHarness(t, "redis", 1)
 	h.setTarget("cache-0")
 	h.start("cache-0", "")

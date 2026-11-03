@@ -53,6 +53,7 @@ func (h *managerHarness) backup(name string) Backup {
 }
 
 func TestAReplicaUploadsTheSnapshotABackupNamesItFor(t *testing.T) {
+	t.Parallel()
 	h := twoInstances(t, "redis")
 	store, spec := h.withStore()
 
@@ -72,6 +73,7 @@ func TestAReplicaUploadsTheSnapshotABackupNamesItFor(t *testing.T) {
 }
 
 func TestAReplicaThatStartsUnderABackupSnapshotsThePrimarysData(t *testing.T) {
+	t.Parallel()
 	h := twoInstances(t, "redis")
 	store, spec := h.withStore()
 	_, err := h.client("cache-0").do(context.Background(), "SET", "kept", "by-the-backup")
@@ -91,6 +93,7 @@ func TestAReplicaThatStartsUnderABackupSnapshotsThePrimarysData(t *testing.T) {
 }
 
 func TestABackupThatCannotReachItsStoreFails(t *testing.T) {
+	t.Parallel()
 	h := twoInstances(t, "redis")
 	_, spec := h.withStore()
 	spec.Endpoint = fmt.Sprintf("http://127.0.0.1:%d", freePort(t))
@@ -102,8 +105,10 @@ func TestABackupThatCannotReachItsStoreFails(t *testing.T) {
 }
 
 func TestANewRedisRestoresABackupOnItsFirstInstance(t *testing.T) {
+	t.Parallel()
 	for _, persistent := range []bool{false, true} {
 		t.Run(fmt.Sprintf("persistent=%v", persistent), func(t *testing.T) {
+			t.Parallel()
 			h := twoInstances(t, "redis")
 			_, spec := h.withStore()
 			for i := range 100 {
@@ -140,6 +145,7 @@ func TestANewRedisRestoresABackupOnItsFirstInstance(t *testing.T) {
 }
 
 func TestABackupToAVolumeWritesTheSnapshotThere(t *testing.T) {
+	t.Parallel()
 	h := twoInstances(t, "redis")
 	store := BackupStore{Volume: &BackupVolume{ClaimName: "backups"}}
 
@@ -153,6 +159,7 @@ func TestABackupToAVolumeWritesTheSnapshotThere(t *testing.T) {
 }
 
 func TestARedisRestoresABackupFromAVolume(t *testing.T) {
+	t.Parallel()
 	h := twoInstances(t, "redis")
 	store := BackupStore{Volume: &BackupVolume{ClaimName: "backups"}}
 	h.runBackup("nightly", "cache-1", store)
@@ -176,6 +183,7 @@ func TestARedisRestoresABackupFromAVolume(t *testing.T) {
 }
 
 func TestThePrimaryDeletesADeletedVolumeBackupsFile(t *testing.T) {
+	t.Parallel()
 	h := twoInstances(t, "redis")
 	store := BackupStore{Volume: &BackupVolume{ClaimName: "backups"}}
 	h.runBackup("nightly", "cache-1", store)

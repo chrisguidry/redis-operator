@@ -88,6 +88,7 @@ func startRecorder(t *testing.T) *recorderFixture {
 }
 
 func TestRecorderWritesACoreEventAboutTheObject(t *testing.T) {
+	t.Parallel()
 	f := startRecorder(t)
 
 	f.r.warning(testEventObject, "FailoverStarted", "failing over from cache-0")
@@ -104,6 +105,7 @@ func TestRecorderWritesACoreEventAboutTheObject(t *testing.T) {
 }
 
 func TestRecorderCountsARepeatOnTheEventItWrote(t *testing.T) {
+	t.Parallel()
 	f := startRecorder(t)
 	f.r.normal(testEventObject, "SwitchoverStarted", "moving the primary")
 	f.api.waitForEvent(redisKind, "cache", "SwitchoverStarted")
@@ -121,6 +123,7 @@ func TestRecorderCountsARepeatOnTheEventItWrote(t *testing.T) {
 }
 
 func TestRecorderWritesADifferentMessageAsANewEvent(t *testing.T) {
+	t.Parallel()
 	f := startRecorder(t)
 	f.r.normal(testEventObject, "SwitchoverStarted", "from cache-0 to cache-1")
 
@@ -130,6 +133,7 @@ func TestRecorderWritesADifferentMessageAsANewEvent(t *testing.T) {
 }
 
 func TestRecorderStartsANewEventAfterTheSeriesWindow(t *testing.T) {
+	t.Parallel()
 	f := startRecorder(t)
 	f.r.normal(testEventObject, "SwitchoverStarted", "moving the primary")
 	f.api.waitForEvent(redisKind, "cache", "SwitchoverStarted")
@@ -141,6 +145,7 @@ func TestRecorderStartsANewEventAfterTheSeriesWindow(t *testing.T) {
 }
 
 func TestRecorderStartsANewEventWhenTheTTLDeletedTheLastOne(t *testing.T) {
+	t.Parallel()
 	f := startRecorder(t)
 	f.r.normal(testEventObject, "SwitchoverStarted", "moving the primary")
 	first := f.api.waitForEvent(redisKind, "cache", "SwitchoverStarted")
@@ -153,6 +158,7 @@ func TestRecorderStartsANewEventWhenTheTTLDeletedTheLastOne(t *testing.T) {
 }
 
 func TestRecorderSendsAFailedWriteAgain(t *testing.T) {
+	t.Parallel()
 	f := startRecorder(t)
 	path := eventsResource.path(testNamespace, "")
 	f.api.refuseNext("POST", path, 503, eventAttempts-1)
@@ -165,6 +171,7 @@ func TestRecorderSendsAFailedWriteAgain(t *testing.T) {
 }
 
 func TestRecorderGivesUpAfterItsAttemptsWithOneLogLine(t *testing.T) {
+	t.Parallel()
 	f := startRecorder(t)
 	path := eventsResource.path(testNamespace, "")
 	f.api.refuse("POST", path, 503)
@@ -178,6 +185,7 @@ func TestRecorderGivesUpAfterItsAttemptsWithOneLogLine(t *testing.T) {
 }
 
 func TestRecorderDropsAnEventInANamespaceThatIsGone(t *testing.T) {
+	t.Parallel()
 	f := startRecorder(t)
 	path := eventsResource.path(testNamespace, "")
 	f.api.refuse("POST", path, 404)
@@ -191,6 +199,7 @@ func TestRecorderDropsAnEventInANamespaceThatIsGone(t *testing.T) {
 }
 
 func TestLeavingNamespaceTellsANamespaceDeleteFromOtherRefusals(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		err  error
@@ -209,6 +218,7 @@ func TestLeavingNamespaceTellsANamespaceDeleteFromOtherRefusals(t *testing.T) {
 }
 
 func TestRecorderDropsAnEventWhenItsQueueIsFull(t *testing.T) {
+	t.Parallel()
 	log := &syncBuffer{}
 	clock := &testClock{at: time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)}
 	r := newEventRecorder(startFakeKube(t).client, clock.now, newLineLog(log))
@@ -222,6 +232,7 @@ func TestRecorderDropsAnEventWhenItsQueueIsFull(t *testing.T) {
 }
 
 func TestCutTextShortensAtACharacterBoundary(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		text  string
 		limit int

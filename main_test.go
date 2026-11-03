@@ -10,6 +10,7 @@ import (
 func noEnv(string) string { return "" }
 
 func TestVersionReportsTheBuild(t *testing.T) {
+	t.Parallel()
 	var log syncBuffer
 
 	err := run(context.Background(), []string{"version"}, noEnv, &log)
@@ -19,24 +20,28 @@ func TestVersionReportsTheBuild(t *testing.T) {
 }
 
 func TestAnUnknownCommandIsRefused(t *testing.T) {
+	t.Parallel()
 	err := run(context.Background(), []string{"bogus"}, noEnv, &syncBuffer{})
 
 	mustMatch(t, err.Error(), `unknown command "bogus": the commands are operator, manager, install, and version`)
 }
 
 func TestTheOperatorNeedsItsPod(t *testing.T) {
+	t.Parallel()
 	err := run(context.Background(), nil, noEnv, &syncBuffer{})
 
 	mustMatch(t, err.Error(), "POD_NAMESPACE and POD_NAME must be set; the operator reads its own pod to learn its image")
 }
 
 func TestTheManagerNeedsItsSettings(t *testing.T) {
+	t.Parallel()
 	err := run(context.Background(), []string{"manager"}, noEnv, &syncBuffer{})
 
 	mustMatch(t, err != nil, true)
 }
 
 func TestInstallCopiesTheBinary(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	err := run(context.Background(), []string{"install", dir}, noEnv, &syncBuffer{})
@@ -48,6 +53,7 @@ func TestInstallCopiesTheBinary(t *testing.T) {
 }
 
 func TestTheOperatorRefusesABadCanaryTimeout(t *testing.T) {
+	t.Parallel()
 	env := map[string]string{"POD_NAMESPACE": "redis-operator", "POD_NAME": "redis-operator-0", "CANARY_TIMEOUT": "soon"}
 
 	err := run(context.Background(), nil, func(name string) string { return env[name] }, &syncBuffer{})

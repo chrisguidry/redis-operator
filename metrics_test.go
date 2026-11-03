@@ -29,6 +29,7 @@ func scrape(t *testing.T, m *metrics) []string {
 }
 
 func TestMetricsStartEverySeriesAtZero(t *testing.T) {
+	t.Parallel()
 	samples := scrape(t, newMetrics("dev"))
 
 	for _, want := range []string{

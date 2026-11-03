@@ -43,6 +43,7 @@ func (h *harness) replicas() int {
 }
 
 func TestScalingDownPastThePrimarySwitchesOverBeforeTheStatefulSetShrinks(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		primary   string
@@ -56,6 +57,7 @@ func TestScalingDownPastThePrimarySwitchesOverBeforeTheStatefulSetShrinks(t *tes
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			h := startHarness(t, 3)
 			h.setTarget(c.primary)
 			h.steady(c.primary, 3)
@@ -85,6 +87,7 @@ func TestScalingDownPastThePrimarySwitchesOverBeforeTheStatefulSetShrinks(t *tes
 }
 
 func TestScalingDownAboveThePrimaryShrinksAtOnce(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	h.steady("cache-0", 3)
 	h.pass()
@@ -97,6 +100,7 @@ func TestScalingDownAboveThePrimaryShrinksAtOnce(t *testing.T) {
 }
 
 func TestTheBudgetOnThePrimaryExistsOnlyWithMoreThanOneInstance(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	h.steady("cache-0", 3)
 	h.pass()
@@ -113,6 +117,7 @@ func TestTheBudgetOnThePrimaryExistsOnlyWithMoreThanOneInstance(t *testing.T) {
 }
 
 func TestTheStatefulSetDeletesTheVolumeOfAnInstanceItScalesAway(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	h.api.update(redisResource, testNamespace, h.name, func(object map[string]any) {
 		object["spec"].(map[string]any)["storage"] = map[string]any{"size": "1Gi"}
@@ -129,6 +134,7 @@ func TestTheStatefulSetDeletesTheVolumeOfAnInstanceItScalesAway(t *testing.T) {
 // primary is settled one of them may hold the only copy of a write
 // confirmed with WAIT, so a scale-down waits.
 func TestAScaleDownWaitsWhileThePrimaryIsNotSettled(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		unsettle func(h *harness)
@@ -171,6 +177,7 @@ func TestAScaleDownWaitsWhileThePrimaryIsNotSettled(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			h := startHarness(t, 3)
 			c.unsettle(h)
 
@@ -189,6 +196,7 @@ func TestAScaleDownWaitsWhileThePrimaryIsNotSettled(t *testing.T) {
 // one beyond spec.instances. Once that primary holds the Lease, the
 // scale-down moves it to an instance that stays, then shrinks.
 func TestAFailoverDuringAScaleDownCanNameAnInstanceTheScaleDownRemoves(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	h.failQuorum(3, 1)
 	h.setReport(detached("cache-1", 90))
@@ -220,6 +228,7 @@ func TestAFailoverDuringAScaleDownCanNameAnInstanceTheScaleDownRemoves(t *testin
 // The budgets count the pods the StatefulSet keeps, so a drain during
 // a held scale-down still evicts one replica at a time.
 func TestTheBudgetsCountThePodsAHeldScaleDownKeeps(t *testing.T) {
+	t.Parallel()
 	h := startHarness(t, 3)
 	h.failQuorum(3, 1)
 	h.setReport(detached("cache-1", 90))

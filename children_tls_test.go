@@ -45,6 +45,7 @@ func portNamed(c templateContainer, name string) int {
 }
 
 func TestAPodWithTLSServesItAndSaysSo(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		tls        *TLSSpec
@@ -76,6 +77,7 @@ func TestAPodWithTLSServesItAndSaysSo(t *testing.T) {
 // A change to plaintext is read at run time, so it does not roll the
 // pods.
 func TestPlaintextLeavesThePodTemplateAlone(t *testing.T) {
+	t.Parallel()
 	r := func(plaintext bool) *Redis {
 		return &Redis{Metadata: ObjectMeta{Name: "cache", Namespace: testNamespace}, Spec: RedisSpec{TLS: &TLSSpec{Secret: "own-tls", Plaintext: plaintext}}}
 	}
@@ -88,6 +90,7 @@ func TestPlaintextLeavesThePodTemplateAlone(t *testing.T) {
 }
 
 func TestEveryServiceServesTLSBesidePlaintext(t *testing.T) {
+	t.Parallel()
 	r := &Redis{Metadata: ObjectMeta{Name: "cache", Namespace: testNamespace}, Spec: RedisSpec{TLS: &TLSSpec{Secret: "own-tls"}}}
 	for _, each := range children(r, "operator-image", nil, nil, 1) {
 		if each.resource != servicesResource {
@@ -104,6 +107,7 @@ func TestEveryServiceServesTLSBesidePlaintext(t *testing.T) {
 }
 
 func TestTheCertificateCoversTheServicesAndEveryPod(t *testing.T) {
+	t.Parallel()
 	r := &Redis{Metadata: ObjectMeta{Name: "cache", Namespace: "apps"}, Spec: RedisSpec{TLS: &TLSSpec{IssuerRef: &IssuerRef{Name: "ca", Kind: "ClusterIssuer"}}}}
 
 	c := certificate(r)
@@ -124,6 +128,7 @@ func TestTheCertificateCoversTheServicesAndEveryPod(t *testing.T) {
 }
 
 func TestARedisWithoutAnIssuerHasNoCertificate(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		tls  *TLSSpec
@@ -141,6 +146,7 @@ func TestARedisWithoutAnIssuerHasNoCertificate(t *testing.T) {
 }
 
 func TestTheConnectionSecretNamesTheWayIn(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		tls  *TLSSpec

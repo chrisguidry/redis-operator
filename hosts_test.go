@@ -3,6 +3,7 @@ package main
 import "testing"
 
 func TestAShortHostResolvesInTheRedisNamespace(t *testing.T) {
+	t.Parallel()
 	cases := []struct{ host, want string }{
 		{"store", "store.example.svc"},
 		{"store:8333", "store.example.svc:8333"},
@@ -20,6 +21,7 @@ func TestAShortHostResolvesInTheRedisNamespace(t *testing.T) {
 }
 
 func TestAShortEndpointResolvesInTheRedisNamespace(t *testing.T) {
+	t.Parallel()
 	store, err := newS3Store("http://store:8333", "", "s3://backups", "a", "b", "example")
 	mustSucceed(t, err)
 
