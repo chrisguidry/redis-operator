@@ -12,10 +12,13 @@ import (
 const sourcePassword = "source-password"
 
 // startSource starts a server outside the operator, with a password of
-// its own, as a source to adopt.
+// its own, as a source to adopt. It starts a replica's sync at once,
+// because a chain of source, holder, and replica otherwise waits out
+// the default diskless sync delay twice, at the source and at the
+// holder, and only the holder's delay is the operator's.
 func startSource(t *testing.T, engine string) *testServer {
 	t.Helper()
-	source := startTestServer(t, engine)
+	source := startTestServer(t, engine, "repl-diskless-sync-delay 0")
 	_, err := source.client(t).do(context.Background(), "CONFIG", "SET", "requirepass", sourcePassword)
 	mustSucceed(t, err)
 	return source
@@ -102,8 +105,12 @@ func TestPromotionMakesTheHolderTheWritablePrimary(t *testing.T) {
 
 	h.setReplicaPhase(replicaPromoted)
 
-	h.waitFor("cache-0 is a ready primary", func() bool {
-		return h.report("cache-0").Role == reportPrimary && h.report("cache-0").Ready
+	// REPLICAOF NO ONE drops cache-1's link to cache-0, and cache-0
+	// refuses writes with NOREPLICAS until cache-1 resyncs, so the wait
+	// is for cache-0's count of the replicas it streams to.
+	h.waitFor("cache-0 is a ready primary that streams to cache-1", func() bool {
+		report := h.report("cache-0")
+		return report.Role == reportPrimary && report.Ready && report.SyncedReplicas == 1
 	})
 	_, err := h.client("cache-0").do(context.Background(), "SET", "after", "promotion")
 	mustSucceed(t, err)

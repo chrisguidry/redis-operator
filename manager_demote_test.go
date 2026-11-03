@@ -228,9 +228,11 @@ func TestADemotedInstanceThatIsPrimaryAgainAcceptsWrites(t *testing.T) {
 	h.waitFor("cache-0 holds the lease as a ready primary", func() bool {
 		return h.holder() == "cache-0" && h.report("cache-0").Ready
 	})
+	// The replica's link comes up before the primary counts it toward
+	// min-replicas-to-write, so the wait is also for the primary's count.
 	h.waitFor("cache-1 replicates cache-0 again", func() bool {
 		report := h.report("cache-1")
-		return report.LinkUp && report.Following == h.ip("cache-0")
+		return report.LinkUp && report.Following == h.ip("cache-0") && h.report("cache-0").SyncedReplicas == 1
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
