@@ -18,13 +18,14 @@ NS=e2e
 # so CI runs the shards as parallel jobs. A shard's scenarios run in the
 # order listed, and each starts from the state the one before it left.
 declare -A SHARDS=(
-  [failover]="delete_primary drain_primary_node operator_down freeze_primary partition_primary partition_primary_from_peers"
+  [failover]="delete_primary drain_primary_node operator_down"
+  [partition]="freeze_primary partition_primary partition_primary_from_peers"
   [access]="metrics acl_users tls backup_restore adoption"
   [backup_volume]="backup_restore_volume rollout"
   [scale]="scale scale_during_failover scale_while_the_primary_dies single_instance"
   [upgrade]="upgrade broken_image"
 )
-SHARD_ORDER="failover access backup_volume scale upgrade"
+SHARD_ORDER="failover partition access backup_volume scale upgrade"
 # SHARD runs one shard. SCENARIOS names the scenarios to run, in order,
 # such as SCENARIOS=adoption to run one of them alone. With neither,
 # every shard runs, one after another, on one cluster.
@@ -119,7 +120,11 @@ trap on_exit EXIT
 
 log "run $RUN_ID: engine $ENGINE ($SERVER_IMAGE)"
 docker network create "$NETWORK" >/dev/null
+prepare_images >"$WORKDIR/prepare-images.log" 2>&1 &
+preparing=$!
 start_cluster
+wait "$preparing" || { cat "$WORKDIR/prepare-images.log" >&2; die "preparing the images failed"; }
+cat "$WORKDIR/prepare-images.log"
 load_images
 deploy_operator
 create_redis

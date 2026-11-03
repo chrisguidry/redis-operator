@@ -3,7 +3,8 @@
 # so every Redis instance has a machine of its own and one can be
 # drained. The operator's image is built from this checkout and loaded
 # into each node's containerd, and the server images are loaded the
-# same way, so no node pulls anything during a scenario.
+# same way, so no node pulls anything during a scenario. The images are
+# built and pulled while the cluster starts.
 #
 # Every node also bind-mounts one host directory at BACKUP_VOLUME_PATH.
 # That stands in for a ReadWriteMany volume: the k3s image has no NFS
@@ -45,17 +46,43 @@ node_containers() {
   for i in $(seq 1 "$AGENTS"); do echo "$SERVER-agent-$i"; done
 }
 
-# load_images builds the operator image and imports it, the server
-# image of this run's engine, and the exporter's image into every node.
-load_images() {
+# prepare_images builds the operator image and pulls the server image
+# of this run's engine, SeaweedFS's, and the exporter's, then saves all
+# four to one archive. It runs while the cluster starts. The binary is
+# built on this machine, as the Dockerfile builds it, so it reuses this
+# machine's Go build cache, and the image holds only the binary.
+prepare_images() {
   log "building the operator image ($OPERATOR_IMAGE)"
-  docker build -q -t "$OPERATOR_IMAGE" --build-arg VERSION=e2e "$REPO_ROOT" >/dev/null
-  docker pull -q "$SERVER_IMAGE" >/dev/null
-  docker pull -q "$SEAWEEDFS_IMAGE" >/dev/null
-  docker pull -q "$EXPORTER_IMAGE" >/dev/null
+  mkdir -p "$WORKDIR/image"
+  (cd "$REPO_ROOT" && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=e2e" -o "$WORKDIR/image/redis-operator" .)
+  docker build -q -t "$OPERATOR_IMAGE" -f - "$WORKDIR/image" >/dev/null <<'DOCKERFILE'
+FROM scratch
+COPY redis-operator /redis-operator
+USER 65532:65532
+ENTRYPOINT ["/redis-operator"]
+DOCKERFILE
+  local image pids=()
+  for image in "$SERVER_IMAGE" "$SEAWEEDFS_IMAGE" "$EXPORTER_IMAGE"; do
+    docker pull -q "$image" >/dev/null &
+    pids+=($!)
+  done
+  for pid in "${pids[@]}"; do
+    wait "$pid"
+  done
+  docker save -o "$WORKDIR/images.tar" "$OPERATOR_IMAGE" "$SERVER_IMAGE" "$SEAWEEDFS_IMAGE" "$EXPORTER_IMAGE"
+}
+
+# load_images imports the archive prepare_images saved into every node
+# at once.
+load_images() {
   log "loading $OPERATOR_IMAGE, $SERVER_IMAGE, $SEAWEEDFS_IMAGE, and $EXPORTER_IMAGE into every node"
+  local node pids=()
   for node in $(node_containers); do
-    docker save "$OPERATOR_IMAGE" "$SERVER_IMAGE" "$SEAWEEDFS_IMAGE" "$EXPORTER_IMAGE" | docker exec -i "$node" ctr images import - >/dev/null
+    docker exec -i "$node" ctr images import - <"$WORKDIR/images.tar" >/dev/null &
+    pids+=($!)
+  done
+  for pid in "${pids[@]}"; do
+    wait "$pid" || die "importing the images into a node failed"
   done
 }
 

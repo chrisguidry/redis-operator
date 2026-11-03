@@ -54,9 +54,15 @@ jobs:
       fail-fast: false
       matrix:
         engine: [redis, valkey]
-        shard: [failover, access, backup_volume, scale, upgrade]
+        shard: [failover, partition, access, backup_volume, scale, upgrade]
     steps:
       - uses: actions/checkout@v7
+      # The operator's binary is built on the runner, so the build reuses
+      # setup-go's cache.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
       - run: make e2e
         env:
           ENGINE: ${{ matrix.engine }}
