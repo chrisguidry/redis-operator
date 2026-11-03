@@ -186,11 +186,11 @@ YAML
 }
 
 # scheduled_volume_backups lets a ScheduledBackup make a Backup every
-# minute under a retention of 90 seconds, and waits for retention to
+# minute under a retention of 30 seconds, and waits for retention to
 # delete the first one, which must take its file off the volume too.
 scheduled_volume_backups() {
-  log "scenario: a ScheduledBackup every minute under a retention of 90 seconds"
-  kubectl -n "$NS" patch redis cache --type=merge -p '{"spec":{"backup":{"retention":"90s"}}}' >/dev/null
+  log "scenario: a ScheduledBackup every minute under a retention of 30 seconds"
+  kubectl -n "$NS" patch redis cache --type=merge -p '{"spec":{"backup":{"retention":"30s"}}}' >/dev/null
   kubectl -n "$NS" apply -f - >/dev/null <<YAML
 apiVersion: redis.guid.foo/v1alpha1
 kind: ScheduledBackup
