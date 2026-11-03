@@ -102,12 +102,16 @@ print_diagnostics() {
   echo "===== node containers =====" >&2
   local node
   for node in $(node_containers); do
-    docker inspect -f "$node: {{.State.Status}}, exit {{.State.ExitCode}}, OOM killed {{.State.OOMKilled}}, error {{.State.Error}}" "$node" >&2 2>&1 || true
+    docker inspect -f "$node: {{.State.Status}}, exit {{.State.ExitCode}}, OOM killed {{.State.OOMKilled}}, restarts {{.RestartCount}}, error {{.State.Error}}" "$node" >&2 2>&1 || true
     if [ "$(docker inspect -f '{{.State.Running}}' "$node" 2>/dev/null)" != true ]; then
       docker logs --tail 40 "$node" >&2 2>&1 || true
     fi
   done
   free -m >&2 2>&1 || true
+  echo "===== cluster =====" >&2
+  kubectl get nodes -o wide >&2 2>&1 || true
+  kubectl get pods -A -o wide >&2 2>&1 || true
+  kubectl -n redis-operator describe pods >&2 2>&1 || true
   echo "===== operator log =====" >&2
   kubectl -n redis-operator logs -l app=redis-operator --prefix --tail=300 >&2 2>&1 || true
   echo "===== instance managers =====" >&2
