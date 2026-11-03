@@ -20,11 +20,15 @@ start_cluster() {
   mkdir -p "$WORKDIR/backups"
   # The instance managers run as another user than this script.
   chmod 777 "$WORKDIR/backups"
-  docker run -d --name "$SERVER" --hostname "$SERVER" --network "$NETWORK" --privileged \
+  # A k3s agent that starts while the server is still coming up can
+  # lose its connection through its load balancer as the balancer moves
+  # from the server's name to its address, and it shuts down. The
+  # restart policy starts it again, and it joins.
+  docker run -d --name "$SERVER" --hostname "$SERVER" --network "$NETWORK" --privileged --restart unless-stopped \
     -v "$WORKDIR/backups:$BACKUP_VOLUME_PATH" -p 127.0.0.1::6443 -e K3S_TOKEN="$RUN_ID" \
     "$K3S_IMAGE" server --disable=traefik,metrics-server --tls-san 127.0.0.1 >/dev/null
   for i in $(seq 1 "$AGENTS"); do
-    docker run -d --name "$SERVER-agent-$i" --hostname "$SERVER-agent-$i" --network "$NETWORK" --privileged \
+    docker run -d --name "$SERVER-agent-$i" --hostname "$SERVER-agent-$i" --network "$NETWORK" --privileged --restart unless-stopped \
       -v "$WORKDIR/backups:$BACKUP_VOLUME_PATH" -e K3S_TOKEN="$RUN_ID" -e K3S_URL="https://$SERVER:6443" \
       "$K3S_IMAGE" agent >/dev/null
   done
@@ -101,7 +105,9 @@ load_images() {
 deploy_operator() {
   log "applying the CRD and the operator"
   kubectl apply -f "$REPO_ROOT/deploy/redis-crd.yaml" >/dev/null
-  kubectl wait --for=condition=Established crd/redis.redis.guid.foo --timeout=30s >/dev/null
+  # kubectl wait fails at once on a CRD with no status yet, so this
+  # waits for the condition itself.
+  retry "the Redis CRD being established" 30 crd_established redis.redis.guid.foo
   kubectl create namespace redis-operator >/dev/null
   kubectl kustomize "$REPO_ROOT/deploy" |
     sed "s#ghcr.io/chrisguidry/redis-operator:latest#$OPERATOR_IMAGE#" |
@@ -109,6 +115,10 @@ deploy_operator() {
   # Short canary timings, so a failed rollout shows within the run.
   kubectl -n redis-operator set env deployment/redis-operator CANARY_SOAK=10s CANARY_TIMEOUT=40s >/dev/null
   kubectl -n redis-operator rollout status deployment/redis-operator --timeout=120s >/dev/null
+}
+
+crd_established() {
+  [ "$(kubectl get crd "$1" -o jsonpath='{.status.conditions[?(@.type=="Established")].status}')" = True ]
 }
 
 # node_of prints the name of the node a pod runs on, which is also the
