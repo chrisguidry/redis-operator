@@ -274,6 +274,25 @@ func (s *server) killClients(ctx context.Context, unpause bool) error {
 	return nil
 }
 
+// minReplicasToWrite reads the min-replicas-to-write the server runs
+// with, which can trail what the manager last asked for when a step
+// fails partway.
+func (s *server) minReplicasToWrite(ctx context.Context) (int, error) {
+	reply, err := s.do(ctx, "CONFIG", "GET", "min-replicas-to-write")
+	if err != nil {
+		return 0, err
+	}
+	pair, ok := reply.([]any)
+	if !ok || len(pair) != 2 {
+		return 0, fmt.Errorf("CONFIG GET min-replicas-to-write answered %v", reply)
+	}
+	text, ok := pair[1].(string)
+	if !ok {
+		return 0, fmt.Errorf("CONFIG GET min-replicas-to-write answered %v", reply)
+	}
+	return strconv.Atoi(text)
+}
+
 func (s *server) setMinReplicasToWrite(ctx context.Context, n int) error {
 	_, err := s.do(ctx, "CONFIG", "SET", "min-replicas-to-write", strconv.Itoa(n))
 	return err

@@ -136,6 +136,23 @@ func (h *managerHarness) setCurrentPrimary(name string) {
 	})
 }
 
+// publishInstances writes status.instances from each manager's current
+// report, as the operator's pass does.
+func (h *managerHarness) publishInstances() {
+	var instances []any
+	for i := range len(h.instances) {
+		report := h.report(instanceName(h.name, i))
+		entry := map[string]any{"name": report.Name, "role": report.Role, "ready": report.Ready, "offset": report.Offset}
+		if report.MinReplicasToWrite != nil {
+			entry["minReplicasToWrite"] = *report.MinReplicasToWrite
+		}
+		instances = append(instances, entry)
+	}
+	h.api.update(redisResource, testNamespace, h.name, func(object map[string]any) {
+		object["status"].(map[string]any)["instances"] = instances
+	})
+}
+
 // start runs the manager of the instance named name, in dir, or in a
 // new directory when dir is empty.
 func (h *managerHarness) start(name, dir string) {
@@ -268,6 +285,18 @@ func (h *managerHarness) waitFor(what string, done func() bool) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	h.t.Fatalf("timed out waiting until %s", what)
+}
+
+// holdsFor fails the test if held stops being true within d.
+func (h *managerHarness) holdsFor(what string, d time.Duration, held func() bool) {
+	h.t.Helper()
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if !held() {
+			h.t.Fatalf("%s stopped holding", what)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // twoInstances starts a primary and a replica that holds its data.

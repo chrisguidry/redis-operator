@@ -30,8 +30,11 @@ type instanceReport struct {
 	Ready      bool   `json:"ready"`
 	Stopping   bool   `json:"stopping,omitempty"`
 	// SyncedReplicas is how many replicas a primary streams to.
-	SyncedReplicas int    `json:"syncedReplicas,omitempty"`
-	Error          string `json:"error,omitempty"`
+	SyncedReplicas int `json:"syncedReplicas,omitempty"`
+	// MinReplicasToWrite is the min-replicas-to-write a primary's server
+	// runs with. A replica's report leaves it out.
+	MinReplicasToWrite *int   `json:"minReplicasToWrite,omitempty"`
+	Error              string `json:"error,omitempty"`
 }
 
 // The roles a report names.

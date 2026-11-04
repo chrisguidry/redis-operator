@@ -127,9 +127,12 @@ type manager struct {
 	switchingOver  bool
 	everHadPrimary bool
 	minReplicas    int
-	instances      int
-	specInstances  int
-	podIPs         map[string]string
+	// primaryMinReplicas is the min-replicas-to-write the primary's
+	// server runs, as status.instances last recorded it.
+	primaryMinReplicas *int
+	instances          int
+	specInstances      int
+	podIPs             map[string]string
 
 	hasData       bool
 	lastRenew     time.Time
@@ -365,7 +368,13 @@ func (m *manager) step(ctx context.Context) {
 	if after, err := m.server.replication(ctx); err == nil {
 		info = after
 	}
-	m.setReport(m.reportFrom(info, actErr), started)
+	report := m.reportFrom(info, actErr)
+	if info.role == "master" {
+		if applied, err := m.server.minReplicasToWrite(ctx); err == nil {
+			report.MinReplicasToWrite = &applied
+		}
+	}
+	m.setReport(report, started)
 }
 
 func (m *manager) readDecision(ctx context.Context, now time.Time) error {
@@ -380,6 +389,12 @@ func (m *manager) readDecision(ctx context.Context, now time.Time) error {
 	m.switchingOver = redis.Status.Switchover != nil
 	m.everHadPrimary = redis.Status.CurrentPrimary != ""
 	m.minReplicas = redis.minReplicasToWrite()
+	m.primaryMinReplicas = nil
+	for _, instance := range redis.Status.Instances {
+		if instance.Role == reportPrimary {
+			m.primaryMinReplicas = instance.MinReplicasToWrite
+		}
+	}
 	// A scale-down that waits keeps pods beyond spec.instances, and
 	// the operator lists every pod in the status.
 	m.instances = max(redis.Spec.instances(), len(redis.Status.Instances))

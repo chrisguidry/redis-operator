@@ -85,3 +85,20 @@ func TestANewRedisStartsWithTheMinReplicasToWriteOfItsSpec(t *testing.T) {
 
 	mustMatch(t, h.minReplicas(), 1)
 }
+
+// The replica a scale-down removes reads the primary's entry, so it
+// detaches only once the primary runs a value the instances that stay
+// can meet.
+func TestTheStatusRecordsTheMinReplicasToWriteThePrimaryRuns(t *testing.T) {
+	t.Parallel()
+	h := startHarness(t, 2)
+	h.steady("cache-0", 2)
+	applied := 1
+	h.setReport(instanceReport{Name: "cache-0", Role: reportPrimary, HoldsLease: true, Target: "cache-0", Offset: 100, HasData: true, Ready: true, SyncedReplicas: 1, MinReplicasToWrite: &applied})
+
+	h.pass()
+
+	instances := h.redis().Status.Instances
+	mustMatch(t, *instances[0].MinReplicasToWrite, 1)
+	mustMatch(t, instances[1].MinReplicasToWrite, (*int)(nil))
+}

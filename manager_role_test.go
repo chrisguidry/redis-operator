@@ -199,6 +199,11 @@ func TestAReplicaThatAScaleDownRemovesDetaches(t *testing.T) {
 	h.api.update(redisResource, testNamespace, h.name, func(object map[string]any) {
 		object["spec"].(map[string]any)["instances"] = 1
 	})
+	h.waitFor("cache-0 runs with no replica to write to", func() bool {
+		applied := h.report("cache-0").MinReplicasToWrite
+		return applied != nil && *applied == 0
+	})
+	h.publishInstances()
 
 	h.waitFor("cache-1 detaches with its data", func() bool {
 		report := h.report("cache-1")
@@ -206,6 +211,27 @@ func TestAReplicaThatAScaleDownRemovesDetaches(t *testing.T) {
 	})
 	_, err := h.client("cache-0").do(context.Background(), "SET", "after", "detach")
 	mustSucceed(t, err)
+}
+
+// The primary takes the lower min-replicas-to-write on its own step, so
+// until the operator has seen it run that value, the replica a
+// scale-down removes keeps following: detached sooner, it would leave
+// a primary that refuses every write with NOREPLICAS.
+func TestAReplicaThatAScaleDownRemovesFollowsWhileThePrimaryCountsOnIt(t *testing.T) {
+	t.Parallel()
+	h := twoInstances(t, "redis")
+
+	h.api.update(redisResource, testNamespace, h.name, func(object map[string]any) {
+		object["spec"].(map[string]any)["instances"] = 1
+		object["status"].(map[string]any)["instances"] = []any{
+			map[string]any{"name": "cache-0", "role": "primary", "ready": true, "minReplicasToWrite": 1},
+			map[string]any{"name": "cache-1", "role": "replica", "ready": true},
+		}
+	})
+
+	h.holdsFor("cache-1 following cache-0", 1500*time.Millisecond, func() bool {
+		return h.report("cache-1").Role == reportReplica
+	})
 }
 
 // A scale-down to one instance that waits keeps its replicas, and a

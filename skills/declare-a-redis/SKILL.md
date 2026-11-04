@@ -414,7 +414,11 @@ primary is one of them, the operator keeps the StatefulSet at its old
 size, switches over to the most caught-up replica that stays, with the
 reason `ScaleDown`, and shrinks the StatefulSet once that replica holds
 the Lease. Each replica that the scale-down removes first detaches, so
-it acknowledges no more writes, and the StatefulSet shrinks once every
+it acknowledges no more writes. It detaches only once the primary's
+entry in `status.instances` shows that its server runs a
+`min-replicas-to-write` the instances that stay can meet, so the
+primary never refuses writes for want of a replica that left. The
+StatefulSet shrinks once every
 replica that stays has reached the removed ones' offsets: a write a
 client confirmed with `WAIT` on a removed replica is then on one that
 stays. The volume claims of removed instances are deleted with

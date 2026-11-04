@@ -118,6 +118,12 @@ Each entry is what that pod's instance manager last reported:
 `offset` is the replication offset. A replica far behind the primary's
 offset is still syncing or has a broken link.
 
+`minReplicasToWrite`, on the primary's entry only, is the
+`min-replicas-to-write` its server runs with. It trails
+`status.minReplicasToWrite` by one step of the primary's instance
+manager. A replica that a scale-down removes waits to detach until this
+value is one the instances that stay can meet.
+
 An instance manager whose process was paused, as `SIGSTOP` or a frozen
 node pauses it, answers `/status` and `/ready` with 503 until a step
 that started after the pause finishes, so its pod is not ready and the

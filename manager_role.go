@@ -225,8 +225,14 @@ func (m *manager) stepAsOther(ctx context.Context, now time.Time, info replicati
 
 // scaledAway reports whether a scale-down removes this instance: its
 // ordinal is at or beyond spec.instances, and the min-replicas-to-write
-// the primary runs with is one the instances that stay can meet, so
-// the primary does not count on this one to take writes.
+// the operator names and the one the primary's server runs are both
+// ones the instances that stay can meet, so the primary does not count
+// on this one to take writes. The primary applies a new value on its
+// own step, so the status's value alone would let this instance detach
+// while the primary still refuses writes without it.
 func (m *manager) scaledAway() bool {
-	return ordinal(m.config.podName) >= m.specInstances && m.minReplicas < m.specInstances
+	if ordinal(m.config.podName) < m.specInstances || m.minReplicas >= m.specInstances {
+		return false
+	}
+	return m.primaryMinReplicas != nil && *m.primaryMinReplicas < m.specInstances
 }

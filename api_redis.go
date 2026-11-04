@@ -110,6 +110,10 @@ type InstanceStatus struct {
 	Role   string `json:"role"`
 	Ready  bool   `json:"ready"`
 	Offset int64  `json:"offset"`
+	// MinReplicasToWrite is the min-replicas-to-write the primary's
+	// server runs with, from its report. It can trail
+	// status.minReplicasToWrite by a step of the primary's manager.
+	MinReplicasToWrite *int `json:"minReplicasToWrite,omitempty"`
 }
 
 // SwitchoverStatus records a planned switchover while it runs.

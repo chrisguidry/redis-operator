@@ -315,6 +315,9 @@ spec:
                       role: {type: string}
                       ready: {type: boolean}
                       offset: {type: integer}
+                      minReplicasToWrite:
+                        type: integer
+                        description: The min-replicas-to-write the primary's server runs with, on the primary's entry only.
                 image:
                   type: string
                 rollout:
