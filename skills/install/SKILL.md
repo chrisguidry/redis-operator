@@ -66,6 +66,46 @@ Do not apply the base URL directly with `kubectl apply -k <url>`: the
 base's image tag is `latest`, and without the `images` entry the
 operator runs whatever release is newest.
 
+With Flux, take the base from its OCI artifact instead. Each version
+of the operator ships `deploy/` as
+`oci://ghcr.io/chrisguidry/redis-operator-deploy`, with the operator's
+image already set to the same version, so the manifests and the image
+move in one revision and need no `images` entry. The artifacts start at
+release 2026.11.04-002:
+
+```yaml
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: redis-operator
+  namespace: redis-operator
+spec:
+  interval: 12h
+  url: oci://ghcr.io/chrisguidry/redis-operator-deploy
+  ref:
+    tag: 2026.11.04-002
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: redis-operator
+  namespace: redis-operator
+spec:
+  interval: 1h
+  prune: true
+  sourceRef:
+    kind: OCIRepository
+    name: redis-operator
+  path: ./
+  targetNamespace: redis-operator
+```
+
+A Kustomization that takes the base from git and sets the image in
+`images` can apply a new image with the old base: the image tag
+changes the moment the Kustomization does, and the base only when the
+source fetches the new tag. A release that needs a manifest change,
+such as a new environment variable, then fails to start.
+
 ## Choose the default images
 
 A `Redis` that names no image runs the images in three variables of the

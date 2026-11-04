@@ -10,6 +10,12 @@
 #     - name: ghcr.io/chrisguidry/redis-operator
 #       newTag: <version>
 #
+# With Flux, follow oci://ghcr.io/chrisguidry/redis-operator-deploy
+# instead: each version publishes this directory there with newTag
+# below set to it, so the manifests and the image arrive in one
+# revision. The release workflow sets the line that reads
+# "newTag: latest", so keep that line as it is.
+#
 # The base does not create a namespace. Whoever runs the cluster decides
 # which namespace the operator runs in, and which object owns it, so a
 # kustomization that removes the operator never deletes a namespace that

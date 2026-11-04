@@ -9,9 +9,13 @@
 # never moves :latest, so a cluster that pulls releases keeps pulling
 # releases.
 #
-# The tag also names the commit to pin when a cluster takes the
-# kustomize base in deploy/, so one tag versions the image and the
-# manifests together.
+# Each version also ships deploy/ as an OCI artifact,
+# ghcr.io/chrisguidry/redis-operator-deploy, with the operator's image
+# set to the same version. A cluster that follows the artifact with a
+# Flux OCIRepository moves the manifests and the image in one revision,
+# so it never applies one release's manifests with another's image. The
+# tag also names the commit to pin when a cluster takes the kustomize
+# base from git.
 name: release
 
 on:
@@ -32,6 +36,7 @@ concurrency:
 
 env:
   IMAGE: ghcr.io/chrisguidry/redis-operator
+  DEPLOY: ghcr.io/chrisguidry/redis-operator-deploy
 
 jobs:
   release:
@@ -152,4 +157,33 @@ jobs:
           docker push "$IMAGE:$VERSION"
           if [ "$RELEASE" = true ]; then
             docker push "$IMAGE:latest"
+          fi
+
+      - uses: fluxcd/flux2/action@v2.9.6
+        with:
+          version: 2.9.6
+
+      # The artifact goes after the image, so it never names an image
+      # that is not pushed yet. A published version never changes: a
+      # rerun of a run whose artifact is already up pushes nothing.
+      # :latest moves only on a release, as the image's does.
+      - name: Push the deploy artifact
+        run: |
+          if docker buildx imagetools inspect "$DEPLOY:$VERSION" >/dev/null 2>&1; then
+            echo "$DEPLOY:$VERSION is already published; a published version never changes"
+          else
+            dir=$(mktemp -d)
+            cp -R deploy/. "$dir"
+            sed -i "s/^    newTag: latest$/    newTag: $VERSION/" "$dir/kustomization.yaml"
+            grep -qx "    newTag: $VERSION" "$dir/kustomization.yaml" || {
+              echo "deploy/kustomization.yaml has no 'newTag: latest' line for the operator's image to set" >&2
+              exit 1
+            }
+            flux push artifact "oci://$DEPLOY:$VERSION" \
+              --path "$dir" \
+              --source "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+              --revision "$VERSION@sha1:$(git rev-parse "${GITHUB_SHA}^{commit}")"
+          fi
+          if [ "$RELEASE" = true ]; then
+            flux tag artifact "oci://$DEPLOY:$VERSION" --tag latest
           fi
