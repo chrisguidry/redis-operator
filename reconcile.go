@@ -99,17 +99,17 @@ var defaultTimings = timings{
 }
 
 type controller struct {
-	client        *kubeClient
-	readings      *metrics
-	now           func() time.Time
-	log           *lineLog
-	events        *eventRecorder
-	wake          chan struct{}
-	timings       timings
-	operatorImage string
-	statusPort    int
-	poller        *http.Client
-	watches       map[kubeResource]*collectionWatch
+	client     *kubeClient
+	readings   *metrics
+	now        func() time.Time
+	log        *lineLog
+	events     *eventRecorder
+	wake       chan struct{}
+	timings    timings
+	images     images
+	statusPort int
+	poller     *http.Client
+	watches    map[kubeResource]*collectionWatch
 
 	// states and backupPhases are read and written by the pass only.
 	states       map[string]*redisState
@@ -145,19 +145,19 @@ type redisState struct {
 	secretData string
 }
 
-func newController(client *kubeClient, readings *metrics, operatorImage string, now func() time.Time, log io.Writer) *controller {
+func newController(client *kubeClient, readings *metrics, imgs images, now func() time.Time, log io.Writer) *controller {
 	c := &controller{
-		client:        client,
-		readings:      readings,
-		now:           now,
-		log:           newLineLog(log),
-		wake:          make(chan struct{}, 1),
-		timings:       defaultTimings,
-		operatorImage: operatorImage,
-		statusPort:    statusPort,
-		watches:       map[kubeResource]*collectionWatch{},
-		states:        map[string]*redisState{},
-		backupPhases:  map[string]string{},
+		client:       client,
+		readings:     readings,
+		now:          now,
+		log:          newLineLog(log),
+		wake:         make(chan struct{}, 1),
+		timings:      defaultTimings,
+		images:       imgs,
+		statusPort:   statusPort,
+		watches:      map[kubeResource]*collectionWatch{},
+		states:       map[string]*redisState{},
+		backupPhases: map[string]string{},
 	}
 	c.events = newEventRecorder(client, now, c.log)
 	c.poller = &http.Client{Timeout: c.timings.pollTimeout}

@@ -3,12 +3,6 @@ package main
 // The metrics exporter that runs beside each instance.
 // plans/completed/01-high-availability.md describes it.
 
-// defaultExporterImage is the redis_exporter image every instance runs
-// beside its server unless spec.metrics.image names another. It moves
-// with the operator's releases. redis_exporter reads Valkey as well as
-// Redis, so both engines run the same image.
-const defaultExporterImage = "oliver006/redis_exporter:v1.96.0"
-
 type MetricsSpec struct {
 	// Enabled is true when left out, so every Redis has metrics unless
 	// its spec turns them off.
@@ -24,9 +18,12 @@ func (s RedisSpec) metricsEnabled() bool {
 	return s.Metrics == nil || s.Metrics.Enabled == nil || *s.Metrics.Enabled
 }
 
-func (s RedisSpec) exporterImage() string {
+// exporterImage is the redis_exporter image every instance runs beside
+// its server. redis_exporter reads Valkey as well as Redis, so both
+// engines run the same image.
+func (s RedisSpec) exporterImage(defaults images) string {
 	if s.Metrics != nil && s.Metrics.Image != "" {
 		return s.Metrics.Image
 	}
-	return defaultExporterImage
+	return defaults.exporter
 }

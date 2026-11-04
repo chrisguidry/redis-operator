@@ -20,7 +20,7 @@ metadata:
   name: cache
 spec:
   engine: valkey          # redis (default) | valkey
-  image: ""               # default: the engine's image at the version the operator pins
+  image: ""               # default: the operator's DEFAULT_REDIS_IMAGE or DEFAULT_VALKEY_IMAGE
   instances: 3            # default 1
   memory: 1Gi             # the container's memory limit; maxmemory is derived from it
   maxmemoryPolicy: noeviction
@@ -34,7 +34,7 @@ spec:
   priorityClassName: ""
   metrics:                # see "Metrics"
     enabled: true         # default true; false removes the exporter
-    image: ""             # default: redis_exporter at the version the operator pins
+    image: ""             # default: the operator's DEFAULT_EXPORTER_IMAGE
     checkSingleKeys: []   # keys whose value or length the exporter reports
   users:                  # ACL users beside the default user; see "Users"
     - {name: app, password: {secret: app-user, key: password}, rules: "~app:* +@all"}

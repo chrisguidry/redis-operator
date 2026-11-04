@@ -22,12 +22,12 @@ type RolloutStatus struct {
 
 // servingImage is the image the StatefulSet's template runs: the
 // rollout's while it rolls, and otherwise the one every instance runs.
-func servingImage(r *Redis) string {
+func servingImage(r *Redis, defaults images) string {
 	if ro := r.Status.Rollout; ro != nil && (ro.Phase == rolloutCanary || ro.Phase == rolloutRolling) {
 		return ro.Image
 	}
 	if r.Status.Image != "" {
 		return r.Status.Image
 	}
-	return r.Spec.image()
+	return r.Spec.image(defaults)
 }

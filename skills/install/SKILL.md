@@ -66,6 +66,39 @@ Do not apply the base URL directly with `kubectl apply -k <url>`: the
 base's image tag is `latest`, and without the `images` entry the
 operator runs whatever release is newest.
 
+## Choose the default images
+
+A `Redis` that names no image runs the images in three variables of the
+operator's environment: `DEFAULT_REDIS_IMAGE`, `DEFAULT_VALKEY_IMAGE`,
+and `DEFAULT_EXPORTER_IMAGE`. The base sets each to the version its
+release was tested with, and the operator refuses to start when one is
+empty. To run a newer server or exporter before the next release, patch
+the value in your kustomization:
+
+```yaml
+patches:
+  - target:
+      kind: Deployment
+      name: redis-operator
+    patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: redis-operator
+      spec:
+        template:
+          spec:
+            containers:
+              - name: operator
+                env:
+                  - name: DEFAULT_REDIS_IMAGE
+                    value: redis:8.10.4
+```
+
+The patch restarts the operator, and every `Redis` that names no image
+of its own then rolls to the new default, through a canary for a new
+server image.
+
 ## Check that it runs
 
 ```sh
@@ -275,10 +308,10 @@ rolls each `Redis`'s pods: replicas first, one at a time, then a
 switchover, then the old primary. A `Redis` of one instance has its
 only pod deleted and restarted.
 
-A `Redis` that leaves `spec.image` empty runs the engine's image at the
-version the operator pins, and a release can move that pin. The
-`upgrade` skill covers both rolls. The exporter image beside each
-instance is pinned the same way, and its move changes the pod template
+A `Redis` that leaves `spec.image` empty runs the operator's default
+server image, and a release can move that default. The `upgrade` skill
+covers both rolls. The exporter image beside each instance is a default
+of the operator in the same way, and its move changes the pod template
 in the same roll; `spec.metrics.image` holds it still.
 
 ## Remove the operator

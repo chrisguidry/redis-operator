@@ -11,7 +11,7 @@ import (
 func templateOf(t *testing.T, spec RedisSpec) (map[string]string, map[string]templateContainer) {
 	t.Helper()
 	r := &Redis{Metadata: ObjectMeta{Name: "cache", Namespace: testNamespace}, Spec: spec}
-	raw, err := json.Marshal(statefulSet(r, "operator-image", nil, 1).body)
+	raw, err := json.Marshal(statefulSet(r, testImages, nil, 1).body)
 	mustSucceed(t, err)
 	var set struct {
 		Spec struct {
@@ -81,9 +81,9 @@ func TestPlaintextLeavesThePodTemplateAlone(t *testing.T) {
 	r := func(plaintext bool) *Redis {
 		return &Redis{Metadata: ObjectMeta{Name: "cache", Namespace: testNamespace}, Spec: RedisSpec{TLS: &TLSSpec{Secret: "own-tls", Plaintext: plaintext}}}
 	}
-	open, err := json.Marshal(statefulSet(r(true), "operator-image", nil, 1).body)
+	open, err := json.Marshal(statefulSet(r(true), testImages, nil, 1).body)
 	mustSucceed(t, err)
-	closed, err := json.Marshal(statefulSet(r(false), "operator-image", nil, 1).body)
+	closed, err := json.Marshal(statefulSet(r(false), testImages, nil, 1).body)
 	mustSucceed(t, err)
 
 	mustMatch(t, string(open), string(closed))
@@ -92,7 +92,7 @@ func TestPlaintextLeavesThePodTemplateAlone(t *testing.T) {
 func TestEveryServiceServesTLSBesidePlaintext(t *testing.T) {
 	t.Parallel()
 	r := &Redis{Metadata: ObjectMeta{Name: "cache", Namespace: testNamespace}, Spec: RedisSpec{TLS: &TLSSpec{Secret: "own-tls"}}}
-	for _, each := range children(r, "operator-image", nil, nil, 1, false) {
+	for _, each := range children(r, testImages, nil, nil, 1, false) {
 		if each.resource != servicesResource {
 			continue
 		}

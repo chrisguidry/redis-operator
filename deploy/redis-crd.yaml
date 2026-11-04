@@ -72,7 +72,7 @@ spec:
                       message: engine cannot change; one engine's data files are not the other's
                 image:
                   type: string
-                  description: The server image. The default is the engine's image at the version this operator pins.
+                  description: The server image. The default is the operator's DEFAULT_REDIS_IMAGE or DEFAULT_VALKEY_IMAGE, by engine.
                 instances:
                   type: integer
                   minimum: 1
@@ -226,7 +226,7 @@ spec:
                       default: true
                     image:
                       type: string
-                      description: The exporter image. The default is redis_exporter at the version this operator pins.
+                      description: The exporter image. The default is the operator's DEFAULT_EXPORTER_IMAGE.
                     checkSingleKeys:
                       type: array
                       description: Keys whose value or length the exporter reports, such as a queue's list. A key is in database 0, or written db<n>=<key>.

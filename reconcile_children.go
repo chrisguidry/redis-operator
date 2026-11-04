@@ -21,7 +21,7 @@ func (c *controller) ensureChildren(ctx context.Context, r *Redis, st *redisStat
 	if err := c.ensureSecret(ctx, r, st); err != nil {
 		return err
 	}
-	for _, each := range children(r, c.operatorImage, managerSecrets(r, w), restoreVolume(r, w), replicas, primaryLabeled) {
+	for _, each := range children(r, c.images, managerSecrets(r, w), restoreVolume(r, w), replicas, primaryLabeled) {
 		err := c.ensureChild(ctx, r, st, each)
 		if !each.optional {
 			if err != nil {

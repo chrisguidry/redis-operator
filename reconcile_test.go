@@ -43,7 +43,7 @@ func TestTheSecretKeepsItsPasswordAcrossPasses(t *testing.T) {
 	var first map[string]any
 	h.api.read(secretsResource, testNamespace, "cache-app", &first)
 
-	h.c = newController(h.api.client, newMetrics("dev"), "image", h.clock.now, h.log)
+	h.c = newController(h.api.client, newMetrics("dev"), testImages, h.clock.now, h.log)
 	h.c.statusPort = h.port
 	h.running = false
 	h.pass()

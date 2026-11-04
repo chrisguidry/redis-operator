@@ -148,12 +148,14 @@ kubectl -n example get statefulset cache -o jsonpath='{.spec.template.spec.initC
 kubectl -n example get pods -l redis.guid.foo/cluster=cache -o custom-columns=NAME:.metadata.name,MANAGER:.spec.initContainers[0].image
 ```
 
-### The default server image moves with the operator
+### The default server image is the operator's
 
-A `Redis` that leaves `spec.image` empty runs the engine's image at the
-version the operator pins, such as `redis:8.10.3` or
-`valkey/valkey:9.0.7` in release 2026.11.01-001. A release that moves
-the pin starts a canary rollout of the new server image on every such
-`Redis` as soon as the new operator reconciles it. The new server image
-and the new instance manager then roll together, through the canary. To choose when the server
-version changes, set `spec.image` explicitly on each `Redis`.
+A `Redis` that leaves `spec.image` empty runs the image in the
+operator's `DEFAULT_REDIS_IMAGE` or `DEFAULT_VALKEY_IMAGE`, such as
+`redis:8.10.3` or `valkey/valkey:9.0.7`. Each release sets them in
+`deploy/operator.yaml`. A release or a patch that changes one starts a
+canary rollout of the new server image on every such `Redis` as soon
+as the restarted operator reconciles it. When a release moves the
+default, the new server image and the new instance manager roll
+together, through the canary. To choose when the server version
+changes, set `spec.image` explicitly on each `Redis`.

@@ -57,6 +57,16 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            # The images a Redis runs when its spec names none. Each
+            # release moves them. A consumer that takes newer versions
+            # sooner patches these values; a change rolls every Redis
+            # that names no image of its own.
+            - name: DEFAULT_REDIS_IMAGE
+              value: redis:8.10.3
+            - name: DEFAULT_VALKEY_IMAGE
+              value: valkey/valkey:9.0.7
+            - name: DEFAULT_EXPORTER_IMAGE
+              value: oliver006/redis_exporter:v1.96.0
           ports:
             - name: metrics
               containerPort: 9200

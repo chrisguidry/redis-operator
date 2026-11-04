@@ -25,12 +25,12 @@ UNTESTED_PACKAGES := go list -f '{{if not (or .TestGoFiles .XTestGoFiles)}}{{.Im
 # copies both binaries out of the images the operator runs by default,
 # so the tests run the same servers a cluster does. It needs Docker.
 SERVERS := $(CURDIR)/.servers
-DEFAULT_IMAGES := $(shell sed -n 's/^[[:space:]]*engine\(Redis\|Valkey\): *"\(.*\)",$$/\2/p' api_redis.go)
+DEFAULT_IMAGES := $(shell awk '/name: DEFAULT_(REDIS|VALKEY)_IMAGE$$/ { getline; print $$2 }' deploy/operator.yaml)
 # The backup tests store their objects in a real SeaweedFS S3 server.
 SEAWEEDFS_IMAGE := chrislusf/seaweedfs:4.51
 export PATH := $(SERVERS):$(PATH)
 
-$(SERVERS)/.images: api_redis.go Makefile
+$(SERVERS)/.images: deploy/operator.yaml Makefile
 	mkdir -p $(SERVERS)
 	for image in $(DEFAULT_IMAGES); do \
 	  case $$image in valkey*) binary=valkey-server ;; *) binary=redis-server ;; esac; \

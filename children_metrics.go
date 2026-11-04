@@ -15,7 +15,7 @@ const (
 	exporterPort      = 9121
 )
 
-func exporter(r *Redis) map[string]any {
+func exporter(r *Redis, defaults images) map[string]any {
 	args := []string{
 		fmt.Sprintf("-redis.addr=redis://127.0.0.1:%d", serverPort),
 		fmt.Sprintf("-web.listen-address=:%d", exporterPort),
@@ -31,7 +31,7 @@ func exporter(r *Redis) map[string]any {
 	}
 	return map[string]any{
 		"name":  exporterContainer,
-		"image": r.Spec.exporterImage(),
+		"image": r.Spec.exporterImage(defaults),
 		"args":  args,
 		// The password stays out of the arguments, which anyone who can
 		// read the pod sees.

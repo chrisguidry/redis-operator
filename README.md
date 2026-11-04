@@ -77,6 +77,13 @@ kubectl -n redis-operator rollout status deployment/redis-operator
 The base's own image tag is `latest`, so a kustomization that leaves
 out the `images` entry runs whatever release is newest.
 
+A `Redis` that names no image runs the defaults in the operator's
+environment: `DEFAULT_REDIS_IMAGE`, `DEFAULT_VALKEY_IMAGE`, and
+`DEFAULT_EXPORTER_IMAGE`. Each release sets them in
+`deploy/operator.yaml`, and the operator refuses to start without
+them. To take a newer Redis or redis_exporter before the next release,
+patch the Deployment's value; the `install` skill shows how.
+
 ## A minimal Redis
 
 ```yaml

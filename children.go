@@ -58,7 +58,7 @@ func secretName(redis string) string { return redis + "-app" }
 // children lists every object for r except its Secret, which the
 // operator creates once and never rewrites, because it holds the
 // password. replicas is the StatefulSet's scale (reconcile_scale.go).
-func children(r *Redis, operatorImage string, secrets []string, restore *BackupVolume, replicas int, primaryLabeled bool) []child {
+func children(r *Redis, imgs images, secrets []string, restore *BackupVolume, replicas int, primaryLabeled bool) []child {
 	name := r.Metadata.Name
 	rules := []map[string]any{
 		{"apiGroups": []string{apiGroup}, "resources": []string{"redis"}, "resourceNames": []string{name}, "verbs": []string{"get"}},
@@ -109,7 +109,7 @@ func children(r *Redis, operatorImage string, secrets []string, restore *BackupV
 				"selector":     map[string]any{"matchLabels": map[string]string{clusterLabel: name, roleLabel: roleReplica}},
 			},
 		}},
-		statefulSet(r, operatorImage, restore, replicas),
+		statefulSet(r, imgs, restore, replicas),
 		// An eviction cannot take the primary. The operator switches over
 		// when the primary's node is cordoned, and the old primary is
 		// then a replica that this budget does not cover. A single
@@ -147,7 +147,7 @@ func service(r *Redis, name string, selector map[string]string, headless bool) c
 	}}
 }
 
-func statefulSet(r *Redis, operatorImage string, restore *BackupVolume, replicas int) child {
+func statefulSet(r *Redis, imgs images, restore *BackupVolume, replicas int) child {
 	name := r.Metadata.Name
 	podLabels := map[string]string{clusterLabel: name}
 	env := []map[string]any{
@@ -182,7 +182,7 @@ func statefulSet(r *Redis, operatorImage string, restore *BackupVolume, replicas
 	}
 	containers := []map[string]any{{
 		"name":           "redis",
-		"image":          servingImage(r),
+		"image":          servingImage(r, imgs),
 		"command":        []string{"/manager/redis-operator", "manager"},
 		"env":            env,
 		"ports":          ports,
@@ -192,7 +192,7 @@ func statefulSet(r *Redis, operatorImage string, restore *BackupVolume, replicas
 		"volumeMounts":   mounts(r, restore),
 	}}
 	if r.Spec.metricsEnabled() {
-		containers = append(containers, exporter(r))
+		containers = append(containers, exporter(r, imgs))
 	}
 	podSpec := map[string]any{
 		"serviceAccountName": name,
@@ -210,7 +210,7 @@ func statefulSet(r *Redis, operatorImage string, restore *BackupVolume, replicas
 		}},
 		"initContainers": []map[string]any{{
 			"name":         "install-manager",
-			"image":        operatorImage,
+			"image":        imgs.operator,
 			"args":         []string{"install", "/manager"},
 			"volumeMounts": []map[string]any{{"name": "manager", "mountPath": "/manager"}},
 		}},

@@ -17,6 +17,16 @@ import (
 	"time"
 )
 
+// testImages are the images every test's operator runs. The tests that
+// start real servers find them on PATH, so these names reach no
+// registry.
+var testImages = images{
+	operator: "registry.example.com/redis-operator:test",
+	redis:    "registry.example.com/redis:default",
+	valkey:   "registry.example.com/valkey:default",
+	exporter: "registry.example.com/redis_exporter:default",
+}
+
 type harness struct {
 	t       *testing.T
 	api     *fakeKube
@@ -64,7 +74,7 @@ func startHarness(t *testing.T, instances int) *harness {
 		Status:   StatefulSetStatus{UpdateRevision: "rev-1"},
 	})
 	h.log = &syncBuffer{}
-	h.c = newController(h.api.client, newMetrics("dev"), "ghcr.io/chrisguidry/redis-operator:test", h.clock.now, h.log)
+	h.c = newController(h.api.client, newMetrics("dev"), testImages, h.clock.now, h.log)
 	h.c.statusPort = h.port
 	h.c.timings.pollTimeout = 200 * time.Millisecond
 	h.c.poller = &http.Client{Timeout: h.c.timings.pollTimeout}

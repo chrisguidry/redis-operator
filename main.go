@@ -64,6 +64,10 @@ func runOperator(ctx context.Context, getenv func(string) string, log io.Writer)
 	if namespace == "" || podName == "" {
 		return errors.New("POD_NAMESPACE and POD_NAME must be set; the operator reads its own pod to learn its image")
 	}
+	imgs, err := defaultImages(getenv)
+	if err != nil {
+		return err
+	}
 	metricsPort := 9200
 	if port := getenv("METRICS_PORT"); port != "" {
 		number, err := strconv.Atoi(port)
@@ -86,7 +90,7 @@ func runOperator(ctx context.Context, getenv func(string) string, log io.Writer)
 	if err != nil {
 		return err
 	}
-	image, err := ownImage(ctx, client, namespace, podName)
+	imgs.operator, err = ownImage(ctx, client, namespace, podName)
 	if err != nil {
 		return err
 	}
@@ -95,12 +99,29 @@ func runOperator(ctx context.Context, getenv func(string) string, log io.Writer)
 	if err != nil {
 		return fmt.Errorf("serving metrics: %w", err)
 	}
-	fmt.Fprintf(log, "redis-operator %s started, metrics on %s, instance managers from %s\n", version, address, image)
+	fmt.Fprintf(log, "redis-operator %s started, metrics on %s, instance managers from %s\n", version, address, imgs.operator)
 	return newElection(client, namespace, candidateIdentity(os.Hostname), readings, log).serve(ctx, func(ctx context.Context) error {
-		c := newController(client, readings, image, time.Now, log)
+		c := newController(client, readings, imgs, time.Now, log)
 		c.timings = stages
 		return c.run(ctx)
 	})
+}
+
+// defaultImages reads the images a Redis runs when its spec names none.
+// deploy/operator.yaml sets each one, and the operator has no default of
+// its own, so the version a cluster runs is written in one place.
+func defaultImages(getenv func(string) string) (images, error) {
+	var imgs images
+	for _, each := range []struct {
+		name  string
+		field *string
+	}{{"DEFAULT_REDIS_IMAGE", &imgs.redis}, {"DEFAULT_VALKEY_IMAGE", &imgs.valkey}, {"DEFAULT_EXPORTER_IMAGE", &imgs.exporter}} {
+		*each.field = getenv(each.name)
+		if *each.field == "" {
+			return images{}, fmt.Errorf("%s must be set; it names the image a Redis runs when its spec names none", each.name)
+		}
+	}
+	return imgs, nil
 }
 
 // ownImage reads the image of this pod's operator container, which the

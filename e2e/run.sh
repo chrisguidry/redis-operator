@@ -66,12 +66,18 @@ for scenario in $SCENARIOS; do
   declare -F "scenario_$scenario" >/dev/null || die "there is no scenario named $scenario"
 done
 
+# default_image prints the value deploy/operator.yaml gives the
+# operator's environment variable $1.
+default_image() {
+  awk -v name="$1" '$0 ~ "name: " name "$" { getline; print $2 }' "$REPO_ROOT/deploy/operator.yaml"
+}
+
 case "$ENGINE" in
-  redis) SERVER_IMAGE=$(sed -n 's/^[[:space:]]*engineRedis: *"\(.*\)",$/\1/p' "$REPO_ROOT/api_redis.go") ;;
-  valkey) SERVER_IMAGE=$(sed -n 's/^[[:space:]]*engineValkey: *"\(.*\)",$/\1/p' "$REPO_ROOT/api_redis.go") ;;
+  redis) SERVER_IMAGE=$(default_image DEFAULT_REDIS_IMAGE) ;;
+  valkey) SERVER_IMAGE=$(default_image DEFAULT_VALKEY_IMAGE) ;;
   *) die "ENGINE is $ENGINE; it must be redis or valkey" ;;
 esac
-EXPORTER_IMAGE=$(sed -n 's/^const defaultExporterImage = "\(.*\)"$/\1/p' "$REPO_ROOT/api_metrics.go")
+EXPORTER_IMAGE=$(default_image DEFAULT_EXPORTER_IMAGE)
 
 RUN_ID=$(random_id)
 NETWORK="redis-e2e-$RUN_ID"

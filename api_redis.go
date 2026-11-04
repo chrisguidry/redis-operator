@@ -18,16 +18,28 @@ const (
 
 var redisResource = kubeResource{apiGroup, "v1alpha1", "redis"}
 
-// The engines, and the image each runs by default. The default moves
-// with the operator's releases.
 const (
 	engineRedis  = "redis"
 	engineValkey = "valkey"
 )
 
-var defaultImages = map[string]string{
-	engineRedis:  "redis:8.10.3",
-	engineValkey: "valkey/valkey:9.0.7",
+// images are the operator's own image, which every pod's init container
+// runs to install the instance manager, and the images a Redis runs
+// when its spec names none. The defaults come from the operator's
+// environment, so a consumer moves them by patching its Deployment,
+// without a release of the operator.
+type images struct {
+	operator string
+	redis    string
+	valkey   string
+	exporter string
+}
+
+func (i images) server(engine string) string {
+	if engine == engineValkey {
+		return i.valkey
+	}
+	return i.redis
 }
 
 // targetPending is the targetPrimary that says the primary failed and
@@ -119,11 +131,11 @@ func (s RedisSpec) engine() string {
 	return s.Engine
 }
 
-func (s RedisSpec) image() string {
+func (s RedisSpec) image(defaults images) string {
 	if s.Image != "" {
 		return s.Image
 	}
-	return defaultImages[s.engine()]
+	return defaults.server(s.engine())
 }
 
 func (s RedisSpec) instances() int {

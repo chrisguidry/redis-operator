@@ -34,7 +34,7 @@ type templateContainer struct {
 func templateContainers(t *testing.T, spec RedisSpec) map[string]templateContainer {
 	t.Helper()
 	r := &Redis{Metadata: ObjectMeta{Name: "cache", Namespace: testNamespace}, Spec: spec}
-	raw, err := json.Marshal(statefulSet(r, "operator-image", nil, 1).body)
+	raw, err := json.Marshal(statefulSet(r, testImages, nil, 1).body)
 	mustSucceed(t, err)
 	var set struct {
 		Spec struct {
@@ -98,14 +98,14 @@ func TestTheExporterScrapesItsOwnInstanceWithThePassword(t *testing.T) {
 	mustMatch(t, exporter.Env[0].ValueFrom.SecretKeyRef.Key, "password")
 }
 
-func TestTheExporterImageIsPinnedUnlessTheSpecNamesOne(t *testing.T) {
+func TestTheExporterImageIsTheDefaultUnlessTheSpecNamesOne(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name    string
 		metrics *MetricsSpec
 		want    string
 	}{
-		{"pinned", nil, defaultExporterImage},
+		{"default", nil, testImages.exporter},
 		{"named", &MetricsSpec{Image: "registry.example.com/redis_exporter:v1"}, "registry.example.com/redis_exporter:v1"},
 	}
 	for _, c := range cases {
@@ -113,6 +113,26 @@ func TestTheExporterImageIsPinnedUnlessTheSpecNamesOne(t *testing.T) {
 			exporter := templateContainers(t, RedisSpec{Metrics: c.metrics})[exporterContainer]
 
 			mustMatch(t, exporter.Image, c.want)
+		})
+	}
+}
+
+func TestTheServerImageIsTheEnginesDefaultUnlessTheSpecNamesOne(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		spec RedisSpec
+		want string
+	}{
+		{"redis", RedisSpec{}, testImages.redis},
+		{"valkey", RedisSpec{Engine: engineValkey}, testImages.valkey},
+		{"named", RedisSpec{Image: "registry.example.com/redis:9"}, "registry.example.com/redis:9"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			server := templateContainers(t, c.spec)["redis"]
+
+			mustMatch(t, server.Image, c.want)
 		})
 	}
 }

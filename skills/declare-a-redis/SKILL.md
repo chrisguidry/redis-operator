@@ -30,7 +30,7 @@ spec:
 | Field | Default | What it does |
 |---|---|---|
 | `engine` | `redis` | `redis` or `valkey`. Cannot change after creation. |
-| `image` | the engine's image at the version the operator pins | The server image. In release 2026.11.01-001 the pins are `redis:8.10.3` and `valkey/valkey:9.0.7`. Changing it starts a canary rollout; see the `upgrade` skill. |
+| `image` | the operator's `DEFAULT_REDIS_IMAGE` or `DEFAULT_VALKEY_IMAGE` | The server image. `deploy/operator.yaml` sets the defaults, such as `redis:8.10.3` and `valkey/valkey:9.0.7`. Changing it starts a canary rollout; see the `upgrade` skill. |
 | `instances` | `1` | 1 to 9. One is the primary; the rest are replicas. |
 | `memory` | `256Mi` | The container's memory request and limit. A whole number with an optional suffix `Ki`, `Mi`, `Gi`, `Ti`, `k`, `M`, `G`, or `T`. |
 | `maxmemoryPolicy` | `noeviction` | The server's `maxmemory-policy`: `noeviction`, `allkeys-lru`, `allkeys-lfu`, `allkeys-random`, `volatile-lru`, `volatile-lfu`, `volatile-random`, or `volatile-ttl`. |
@@ -39,7 +39,7 @@ spec:
 | `cpu` | none | The container's CPU request. There is no CPU limit. |
 | `nodeSelector`, `tolerations`, `priorityClassName` | none | Copied into the pod spec. |
 | `metrics.enabled` | `true` | Runs redis_exporter beside each instance; see "Metrics". |
-| `metrics.image` | redis_exporter at the version the operator pins | The exporter image. The operator pins `oliver006/redis_exporter:v1.96.0`. |
+| `metrics.image` | the operator's `DEFAULT_EXPORTER_IMAGE` | The exporter image, such as `oliver006/redis_exporter:v1.96.0`. |
 | `metrics.checkSingleKeys` | none | Keys whose value or length the exporter reports, such as `celery`. A key is in database 0; write `db1=jobs` for another database. No key may hold a comma. |
 | `users` | none | ACL users beside the default user; see "Users". |
 | `tls.issuerRef`, `tls.secret`, `tls.plaintext` | none | TLS on port 6380; see "TLS". |

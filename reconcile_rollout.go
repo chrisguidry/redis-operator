@@ -18,7 +18,7 @@ const (
 )
 
 func (d *decision) rollout(updateRevision string) {
-	want := d.r.Spec.image()
+	want := d.r.Spec.image(d.c.images)
 	if d.status.Image == "" {
 		d.status.Image = want
 		return
