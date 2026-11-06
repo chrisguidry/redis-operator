@@ -2,7 +2,7 @@
 # cluster credentials and the Redis passwords, so the image has no shell,
 # no libc, and no tools.
 
-FROM golang:1.27.2-bookworm AS build
+FROM golang:1.27.3-bookworm AS build
 WORKDIR /src
 # The module files come first, so a source change reuses the cached
 # download layer.

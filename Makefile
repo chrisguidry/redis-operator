@@ -5,16 +5,17 @@
 test: test-go
 
 # The coverage gate measures on its own run, on a pinned toolchain. Go
-# 1.27 splits a basic block into one profile row for each run of code
-# inside it, and repeats the block's statement count on every row. Every
-# reader sums those rows, `go tool cover` included, so a block counts
-# once more for each comment inside it. Go 1.26 counts each block once,
-# which is what the floor in .testcoverage.yml is set against. Move this
-# pin to the newest toolchain that counts each block once.
+# 1.27.0 split a basic block into one profile row for each run of code
+# inside it, and repeated the block's statement count on every row. Every
+# reader sums those rows, `go tool cover` included, so a block counted
+# once more for each comment inside it. Go 1.27.2 and later still split
+# the rows but count each block's statements once, which is what the
+# floor in .testcoverage.yml is set against. Move this pin to the newest
+# toolchain that counts each block once.
 #
 # go-test-coverage is a tool dependency in go.mod, so the gate needs
 # nothing installed except the Go toolchain.
-COVERAGE_TOOLCHAIN := go1.26.7
+COVERAGE_TOOLCHAIN := go1.27.3
 
 # A package with no test file writes no rows to the profile, so the gate
 # does not measure it and cannot fail it. This lists such packages, and
