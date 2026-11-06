@@ -54,11 +54,11 @@ func newMetrics(version string) *metrics {
 		}, []string{"resource"}),
 		failovers: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: metricsPrefix + "failovers_total",
-			Help: "Failovers started because the primary could not be reached.",
+			Help: "Failovers started, counted once the start is written to the Redis's status.",
 		}),
 		switchovers: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: metricsPrefix + "switchovers_total",
-			Help: "Planned switchovers started, by reason.",
+			Help: "Planned switchovers started, by reason, counted once the start is written to the Redis's status.",
 		}, []string{"reason"}),
 		leader: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: metricsPrefix + "leader",

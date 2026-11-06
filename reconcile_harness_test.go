@@ -7,11 +7,13 @@ package main
 // managers would write, and check what the operator decides.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"maps"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -157,6 +159,14 @@ func (h *harness) holdLease(holder string) {
 // event would.
 func (h *harness) pass() {
 	h.t.Helper()
+	h.passWith(h.t.Context())
+}
+
+// passWith runs one pass on ctx, as pass does. The watches and the
+// Event recorder run on the test's context, so a pass on a context that
+// ended, as after the operator lost its Lease, ends only that pass.
+func (h *harness) passWith(ctx context.Context) {
+	h.t.Helper()
 	if !h.running {
 		h.running = true
 		versions, err := h.c.list(h.t.Context())
@@ -167,7 +177,7 @@ func (h *harness) pass() {
 		h.t.Cleanup(running.Wait)
 	}
 	eventually(h.t, "the stores hold the cluster", h.synced)
-	h.c.pass(h.t.Context())
+	h.c.pass(ctx)
 }
 
 func (h *harness) synced() bool {
@@ -207,4 +217,15 @@ func (h *harness) pod(name string) Pod {
 
 func (h *harness) editPod(name string, change func(object map[string]any)) {
 	h.api.update(podsResource, testNamespace, name, change)
+}
+
+// linesWith counts the operator's log lines that contain text.
+func (h *harness) linesWith(text string) int {
+	n := 0
+	for _, line := range h.log.lines() {
+		if strings.Contains(line, text) {
+			n++
+		}
+	}
+	return n
 }

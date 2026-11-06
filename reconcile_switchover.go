@@ -21,11 +21,11 @@ func (d *decision) switchover(updateRevision string) {
 		started, _ := time.Parse(time.RFC3339, s.StartedAt)
 		switch {
 		case d.holder == s.To:
-			d.c.log.printf("%s: switchover from %s to %s done", d.subject(), s.From, s.To)
+			d.line("switchover from %s to %s done", s.From, s.To)
 			d.note(eventNormal, "SwitchoverDone", fmt.Sprintf("%s is primary, in place of %s (%s)", s.To, s.From, s.Reason))
 			d.status.Switchover = nil
 		case d.now.Sub(started) > d.c.timings.switchoverDeadline:
-			d.c.log.printf("%s: switchover from %s to %s did not finish in %s; %s stays primary", d.subject(), s.From, s.To, d.c.timings.switchoverDeadline, s.From)
+			d.line("switchover from %s to %s did not finish in %s; %s stays primary", s.From, s.To, d.c.timings.switchoverDeadline, s.From)
 			d.status.Switchover = nil
 			d.status.TargetPrimary = s.From
 			d.st.retryAfter = d.now.Add(d.c.timings.switchoverBackoff)
@@ -61,9 +61,9 @@ func (d *decision) switchover(updateRevision string) {
 		return
 	}
 	d.c.log.clear(d.subject(), "switchover")
-	d.c.log.printf("%s: switching over from %s to %s: %s", d.subject(), d.holder, to, reason)
+	d.line("switching over from %s to %s: %s", d.holder, to, reason)
 	d.note(eventNormal, "SwitchoverStarted", switchoverMessage(d.holder, to, reason))
-	d.c.readings.switchovers.WithLabelValues(reason).Inc()
+	d.count(d.c.readings.switchovers.WithLabelValues(reason))
 	d.status.TargetPrimary = to
 	d.status.Switchover = &SwitchoverStatus{From: d.holder, To: to, Reason: reason, StartedAt: d.now.UTC().Format(time.RFC3339)}
 	d.setCondition("SwitchoverFailed", ConditionFalse, "Started", "")
@@ -97,7 +97,7 @@ func (d *decision) bestReplica(updatedOnly bool, updateRevision string) string {
 		if updatedOnly && pod.Metadata.Labels[revisionLabel] != updateRevision {
 			continue
 		}
-		report, ok := d.st.fresh(name, d.now, 2*d.c.timings.backstop)
+		report, ok := d.st.fresh(name, d.polled, 2*d.c.timings.backstop)
 		if !ok || report.Role != reportReplica || !report.LinkUp || report.Following != primaryIP || report.Stopping {
 			continue
 		}

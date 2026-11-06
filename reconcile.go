@@ -8,9 +8,10 @@ package main
 // decision it acts on is in each Redis's status, not in its memory.
 //
 // The memory holds only what time measures: when each instance manager
-// last answered, when a failover started, and when a failed switchover
-// may be tried again. A new leader starts that memory empty, and counts
-// from its first poll.
+// last answered, since when it has missed the polls that other managers
+// answered, when a failover started, and when a failed switchover may
+// be tried again. A new leader starts that memory empty, and counts a
+// manager's silence from the first such poll it misses.
 
 import (
 	"context"
@@ -53,8 +54,9 @@ type timings struct {
 	// backstop is how often a pass runs with nothing to prompt it. It is
 	// also how often the instance managers are polled.
 	backstop time.Duration
-	// failureThreshold is how long the primary's manager may go
-	// unanswered before a failover starts.
+	// failureThreshold is how long the primary's manager may miss
+	// informative polls before a failover starts, counted from the first
+	// one it missed (reconcile_poll.go).
 	failureThreshold time.Duration
 	// leaderlessThreshold is how long the Lease may have no holder before
 	// a failover starts. It is longer than a lease duration, because a
@@ -118,9 +120,15 @@ type controller struct {
 
 // redisState is what the operator remembers about one Redis.
 type redisState struct {
-	firstPoll time.Time
-	lastSeen  map[string]time.Time
-	reports   map[string]instanceReport
+	// lastSeen is when each instance manager last answered, and reports
+	// what it answered then.
+	lastSeen map[string]time.Time
+	reports  map[string]instanceReport
+	// informedAt is the time of the latest informative poll, and
+	// missedSince holds, for each instance, the first informative poll
+	// it missed since it last answered (reconcile_poll.go).
+	informedAt  time.Time
+	missedSince map[string]time.Time
 	// pendingSince is when the operator wrote targetPrimary: pending.
 	pendingSince time.Time
 	// leaderlessSince is when the Lease was last seen with no holder,
@@ -187,6 +195,12 @@ func (c *controller) run(ctx context.Context) error {
 	ticker := time.NewTicker(c.timings.backstop)
 	defer ticker.Stop()
 	for {
+		// select picks at random among the cases that are ready, so a
+		// wake or a tick can win over a context that already ended, and
+		// a pass on it would reach no instance manager.
+		if ctx.Err() != nil {
+			return nil
+		}
 		c.pass(ctx)
 		select {
 		case <-ctx.Done():
@@ -278,6 +292,10 @@ func objectKey(meta ObjectMeta) string {
 	return meta.Namespace + "/" + meta.Name
 }
 
+// pass reconciles each Redis, then the backups. A pass on a context
+// that ended, as when the operator lost its Lease, stops at once: its
+// requests fail because the operator stopped, not because a Redis is
+// unwell, so it decides nothing and counts no error.
 func (c *controller) pass(ctx context.Context) {
 	w, err := c.read()
 	if err != nil {
@@ -287,15 +305,24 @@ func (c *controller) pass(ctx context.Context) {
 	c.log.clear("reading the cluster", topicReconcile)
 	live := map[string]bool{}
 	for index := range w.redis {
+		if ctx.Err() != nil {
+			return
+		}
 		r := &w.redis[index]
 		live[r.Metadata.UID] = true
 		subject := "redis " + objectKey(r.Metadata)
 		if err := c.reconcile(ctx, r, w); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			c.readings.reconcileErrors.Inc()
 			c.log.fault(subject, topicReconcile, errorText(err))
 			continue
 		}
 		c.log.clear(subject, topicReconcile)
+	}
+	if ctx.Err() != nil {
+		return
 	}
 	c.reconcileBackups(ctx, w)
 	for uid := range c.states {
@@ -308,63 +335,8 @@ func (c *controller) pass(ctx context.Context) {
 func (c *controller) state(r *Redis) *redisState {
 	st, ok := c.states[r.Metadata.UID]
 	if !ok {
-		st = &redisState{lastSeen: map[string]time.Time{}, reports: map[string]instanceReport{}, applied: map[string]string{}}
+		st = &redisState{lastSeen: map[string]time.Time{}, reports: map[string]instanceReport{}, missedSince: map[string]time.Time{}, applied: map[string]string{}}
 		c.states[r.Metadata.UID] = st
 	}
 	return st
-}
-
-// poll reads every instance manager's /status at once, and returns the
-// time it records for the managers that answered.
-func (c *controller) poll(ctx context.Context, st *redisState, pods []Pod) time.Time {
-	now := c.now()
-	if st.firstPoll.IsZero() {
-		st.firstPoll = now
-	}
-	type answer struct {
-		name   string
-		report instanceReport
-		err    error
-	}
-	answers := make(chan answer, len(pods))
-	asked := 0
-	for _, pod := range pods {
-		if pod.Status.PodIP == "" || pod.Metadata.DeletionTimestamp != "" && pod.Status.Phase != "Running" {
-			continue
-		}
-		asked++
-		go func() {
-			address := fmt.Sprintf("%s:%d", pod.Status.PodIP, c.statusPort)
-			report, err := readInstanceReport(ctx, c.poller, address)
-			answers <- answer{pod.Metadata.Name, report, err}
-		}()
-	}
-	for range asked {
-		a := <-answers
-		if a.err != nil {
-			continue
-		}
-		st.lastSeen[a.name] = now
-		st.reports[a.name] = a.report
-	}
-	return now
-}
-
-// silentFor is how long the manager of name has not answered.
-func (st *redisState) silentFor(name string, now time.Time) time.Duration {
-	seen, ok := st.lastSeen[name]
-	if !ok {
-		seen = st.firstPoll
-	}
-	return now.Sub(seen)
-}
-
-// fresh returns the report of name if its manager answered the latest
-// poll.
-func (st *redisState) fresh(name string, now time.Time, within time.Duration) (instanceReport, bool) {
-	if st.silentFor(name, now) > within {
-		return instanceReport{}, false
-	}
-	report, ok := st.reports[name]
-	return report, ok
 }

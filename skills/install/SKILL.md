@@ -188,8 +188,8 @@ that selects `app: redis-operator`. The series:
 | `redis_operator_leader` | 1 on the replica that holds the Lease, 0 on the standby |
 | `redis_operator_build_info{version}` | always 1; the label is the release |
 | `redis_operator_reconcile_errors_total` | passes over a `Redis` that failed |
-| `redis_operator_failovers_total` | failovers started because the primary could not be reached |
-| `redis_operator_switchovers_total{reason}` | planned switchovers, by reason: `NodeCordoned`, `PodDeleted`, `Rollout`, or `ScaleDown` |
+| `redis_operator_failovers_total` | failovers started, counted once the start is written to the `Redis`'s status |
+| `redis_operator_switchovers_total{reason}` | planned switchovers started, by reason: `NodeCordoned`, `PodDeleted`, `Rollout`, or `ScaleDown`, counted once the start is written to the `Redis`'s status |
 | `redis_operator_watch_restarts_total{resource}` | watches that ended and were opened again |
 
 Every Redis instance pod also runs redis_exporter in a container named
@@ -270,8 +270,12 @@ skill says what to read for each.
 
 The operator polls each instance manager's `/status` on port 9123 of
 every Redis pod, every 2 seconds. In a namespace whose policies deny
-ingress by default, admit the operator's pods on that port, or the
-operator sees every instance as silent and fails the primary over:
+ingress by default, admit the operator's pods on that port. Without
+it, the operator reaches no instance manager and logs
+`no instance manager answered on status port 9123` once for each
+`Redis`. It cannot tell whether the primary is up, so it starts no
+failover when the primary dies, and a failover that starts because no
+instance holds the Lease cannot name the next primary:
 
 ```yaml
 apiVersion: networking.k8s.io/v1

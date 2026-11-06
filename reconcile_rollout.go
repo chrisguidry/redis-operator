@@ -83,8 +83,8 @@ func (d *decision) canaryName() string {
 // caught up for the soak, and fails it after the timeout.
 func (d *decision) watchCanary(ro *RolloutStatus, updateRevision string) {
 	pod, ok := d.pods[ro.Canary]
-	report, fresh := d.st.fresh(ro.Canary, d.now, 2*d.c.timings.backstop)
-	primary, _ := d.st.fresh(d.holder, d.now, 2*d.c.timings.backstop)
+	report, fresh := d.st.fresh(ro.Canary, d.polled, 2*d.c.timings.backstop)
+	primary, _ := d.st.fresh(d.holder, d.polled, 2*d.c.timings.backstop)
 	proven := ok && updateRevision != "" && pod.Metadata.Labels[revisionLabel] == updateRevision &&
 		pod.ready() && fresh && report.LinkUp && report.Offset >= primary.Offset-d.c.timings.canaryLagBytes
 	switch {

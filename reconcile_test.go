@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strconv"
 	"strings"
 	"testing"
@@ -124,6 +125,27 @@ func TestNoFailoverStartsBeforeAnyPrimaryHeldTheLease(t *testing.T) {
 	h.passFor(20*time.Second, 2*time.Second)
 
 	mustMatch(t, h.redis().Status.TargetPrimary, "cache-0")
+}
+
+// A pass that runs after the operator lost its Lease sends every
+// request on a canceled context, so no manager answers it. That
+// silence is the operator's, and the pass decides and counts nothing.
+func TestAPassAfterTheLeaseIsLostDecidesAndCountsNothing(t *testing.T) {
+	t.Parallel()
+	h := startHarness(t, 3)
+	h.steady("cache-0", 3)
+	h.pass()
+	h.clock.advance(10 * time.Second)
+	ctx, cancel := context.WithCancelCause(t.Context())
+	cancel(errLostLease)
+
+	h.passWith(ctx)
+
+	mustMatch(t, h.linesWith("failing over"), 0)
+	mustMatch(t, h.redis().Status.TargetPrimary, "cache-0")
+	samples := scrape(t, h.c.readings)
+	mustContainLine(t, samples, "redis_operator_failovers_total 0")
+	mustContainLine(t, samples, "redis_operator_reconcile_errors_total 0")
 }
 
 func TestASilentPrimaryStartsAFailoverToTheReplicaWithTheMostData(t *testing.T) {

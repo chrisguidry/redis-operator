@@ -1,13 +1,20 @@
 package main
 
-// The Events of a Redis's decisions. A decision notes its Event while
-// the pass composes the status, and the pass posts the notes, and one
-// Event for each condition that transitioned, only once the status
-// write lands. A write that a newer version refused lands nothing, and
-// the next pass decides again from that version, so an Event posted
-// before the write could tell of a decision that never took effect.
+// The Events, log lines, and counters of a Redis's decisions. A
+// decision notes its Event, its line, and the counter it increments
+// while the pass composes the status, and the pass posts the notes, one
+// Event for each condition that transitioned, writes the lines, and
+// increments the counters only once the status write lands. A write
+// that a newer version refused, or that failed, lands nothing, and the
+// next pass decides again, so a record made before the write could
+// tell of a decision that never took effect, and count it once for
+// each pass that tried it.
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/prometheus/client_golang/prometheus"
+)
 
 // eventNote is an Event that a decision posts once its status lands.
 type eventNote struct {
@@ -18,11 +25,28 @@ func (d *decision) note(kind, reason, message string) {
 	d.notes = append(d.notes, eventNote{kind, reason, message})
 }
 
-// postDecisions posts the notes of a pass, then an Event for each
-// condition that is new or whose status or reason changed. A condition
-// whose message alone changed, such as the count of ready instances,
-// did not transition.
+// line keeps a log line about the Redis that the pass writes once its
+// status lands.
+func (d *decision) line(format string, args ...any) {
+	d.lines = append(d.lines, d.subject()+": "+fmt.Sprintf(format, args...))
+}
+
+// count keeps a counter that the pass increments once its status lands.
+func (d *decision) count(counter prometheus.Counter) {
+	d.counts = append(d.counts, counter)
+}
+
+// postDecisions writes the lines of a pass, increments its counters,
+// and posts its notes, then an Event for each condition that is new or
+// whose status or reason changed. A condition whose message alone
+// changed, such as the count of ready instances, did not transition.
 func (c *controller) postDecisions(r *Redis, d *decision) {
+	for _, line := range d.lines {
+		c.log.printf("%s", line)
+	}
+	for _, counter := range d.counts {
+		counter.Inc()
+	}
 	object := referenceTo(redisKind, r.Metadata)
 	for _, n := range d.notes {
 		c.events.post(object, n.kind, n.reason, n.message)

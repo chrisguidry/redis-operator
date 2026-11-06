@@ -77,7 +77,7 @@ func (d *decision) noteForced(best string, counted int) {
 	}
 	d.clearForce = true
 	if need := d.quorum(); counted < need {
-		d.c.log.printf("%s: %s is the next primary without the quorum: %d of %d instances detached with their data", d.subject(), best, counted, need)
+		d.line("%s is the next primary without the quorum: %d of %d instances detached with their data", best, counted, need)
 		d.note(eventWarning, "FailoverForced", fmt.Sprintf("%s is the next primary without the quorum: %d of the %d instances it needs had detached with their data, so a write only the others held is lost", best, counted, need))
 	}
 }
