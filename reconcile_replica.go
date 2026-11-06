@@ -51,7 +51,7 @@ func (d *decision) confirmPromotion() {
 	if adopted.Status == ConditionTrue {
 		return
 	}
-	report, ok := d.st.fresh(d.holder, d.now, 2*d.c.timings.backstop)
+	report, ok := d.st.fresh(d.holder, d.polled, 2*d.c.timings.backstop)
 	if !ok || report.Role != reportPrimary || !report.Ready {
 		return
 	}
@@ -99,7 +99,7 @@ func (d *decision) sourceOffset(ctx context.Context) (int64, string, error) {
 }
 
 func (d *decision) holderOffset() (int64, bool) {
-	report, ok := d.st.fresh(d.holder, d.now, 2*d.c.timings.backstop)
+	report, ok := d.st.fresh(d.holder, d.polled, 2*d.c.timings.backstop)
 	return report.Offset, ok && report.LinkUp
 }
 

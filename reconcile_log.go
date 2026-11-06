@@ -30,6 +30,9 @@ const (
 	topicStatus    = "status"
 	// topicOptional is an optional child's write (children.go).
 	topicOptional = "optional child"
+	// topicPoll is a poll that no instance manager answered
+	// (reconcile_poll.go).
+	topicPoll = "poll"
 )
 
 func newLineLog(out io.Writer) *lineLog {

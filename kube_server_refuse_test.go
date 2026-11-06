@@ -23,6 +23,30 @@ func (f *fakeKube) refuseNext(method, path string, code, times int) {
 	f.refusalsLeft[method+" "+path] = times
 }
 
+// duringNext runs run while the next request of method to path waits,
+// before the fake answers it, as a slow API server makes the operator
+// wait. A test moves its clock in run.
+func (f *fakeKube) duringNext(method, path string, run func()) {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+	if f.during == nil {
+		f.during = map[string]func(){}
+	}
+	f.during[method+" "+path] = run
+}
+
+// runDuring runs, once, the function a test set for r.
+func (f *fakeKube) runDuring(r *http.Request) {
+	f.mutex.Lock()
+	request := r.Method + " " + r.URL.Path
+	run, found := f.during[request]
+	delete(f.during, request)
+	f.mutex.Unlock()
+	if found {
+		run()
+	}
+}
+
 // hangUp marks in refusals a request the fake never answers.
 const hangUp = -1
 

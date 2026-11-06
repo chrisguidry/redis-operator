@@ -28,7 +28,7 @@ func (d *decision) minReplicasToWrite() {
 // instance that a scale-down removed stays fresh for a moment, and a
 // scale-up right after brings its name back.
 func (d *decision) syncedReplicas() int {
-	report, ok := d.st.fresh(d.holder, d.now, 2*d.c.timings.backstop)
+	report, ok := d.st.fresh(d.holder, d.polled, 2*d.c.timings.backstop)
 	if !ok || report.Role != reportPrimary {
 		return 0
 	}

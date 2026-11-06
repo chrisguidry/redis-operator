@@ -141,10 +141,11 @@ kubectl -n redis-operator logs "$leader" | grep 'redis example/cache'
 ```
 
 The operator logs each decision that it also posts as an Event, with
-every attempt and detail: failing over and why, the next
+its detail: failing over and why, the next
 primary and its offset, each switchover and its reason, each pod it
-rolls, and each backup. A fault that repeats on every pass is logged
-once.
+rolls, and each backup. It logs a failover or a switchover only once
+the status write that records it lands, so a pass whose write failed
+logs none. A fault that repeats on every pass is logged once.
 
 Each pod's instance manager logs to the `redis` container, beside the
 server's own log:
@@ -335,9 +336,13 @@ no two instances share a node. The `Redis` then reports
 
 ## A failover
 
-The operator fails over when the primary's instance manager has not
-answered for 6 seconds, when no instance has held the Lease for 21
-seconds, or when the target restarted with no data. It writes
+The operator fails over when the primary's instance manager has
+missed the operator's polls for 6 seconds, counted from the first poll
+it missed, when no instance has held the Lease for 21 seconds, or when
+the target restarted with no data. Only a poll that another instance
+manager answered counts: when the operator reaches none of them, it
+cannot tell a dead primary from its own network fault, and it starts no
+failover for silence. It writes
 `targetPrimary: pending`, every instance detaches, and after every
 reachable instance reports detached, or 5 seconds, it names the
 reachable instance with data and the highest offset, once it has its
@@ -354,7 +359,8 @@ instances have detached with their data that one of them holds it: all
 but `n` of the instances. With three instances and the default
 `minReplicasToWrite` of 1, that is two, so a failover after the primary
 and one replica fail at once waits for one of them to return.
-`redis_operator_failovers_total` counts failovers.
+`redis_operator_failovers_total` counts the failovers whose start the
+operator wrote to the `Redis`'s status.
 
 While it waits, `Ready` is False with the reason `QuorumNotReached`,
 and its message says how many instances detached and how many the
@@ -387,7 +393,9 @@ returns 0 for them, and the failover discards them.
 A failover that does not finish (`FailoverInProgress` for long) means
 no reachable instance holds data. Check that the pods run and that the
 operator reaches them on port 9123: a NetworkPolicy that blocks the
-operator makes every instance look silent. See the `install` skill.
+operator makes every instance look silent, and the operator logs
+`no instance manager answered on status port 9123` once for the
+`Redis`. See the `install` skill.
 
 ## A primary that fenced itself
 
@@ -419,8 +427,10 @@ nothing" below. If the pods run and one leads, Prometheus cannot reach
 port 9200; check the PodMonitor `redis-operator` and NetworkPolicies.
 
 **`RedisRepeatedFailovers`**: three or more failovers in an hour,
-across every `Redis`. A failover starts only when a primary stops
-answering, so some primary keeps dying or losing the network. The
+across every `Redis`. A failover starts only when a primary's
+instance manager stops answering while another answers, when no
+instance holds the Lease, or when the target restarted with no data,
+so some primary keeps dying or losing the network. The
 operator's log names each one (`grep 'failing over'`); read the old
 primary's `redis` container log with `--previous` for an OOM kill or a
 crash, and its node's events.

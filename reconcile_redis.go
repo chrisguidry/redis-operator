@@ -2,9 +2,11 @@ package main
 
 // The decisions for one Redis: which instance should be primary, when a
 // failover starts, when a switchover starts and ends
-// (reconcile_switchover.go), and which pod rolls next. Each decision is a change to status.targetPrimary, which
-// the operator writes with the resourceVersion it read, so a decision
-// made from a stale read never lands.
+// (reconcile_switchover.go), and which pod rolls next. Each decision is
+// a change to status.targetPrimary, which the operator writes with the
+// resourceVersion it read, so a decision made from a stale read never
+// lands. A decision's log lines, counters, and Events wait for that
+// write (reconcile_events.go).
 
 import (
 	"context"
@@ -17,6 +19,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // revisionLabel is the label the StatefulSet controller puts on each pod
@@ -38,7 +42,14 @@ func (c *controller) reconcile(ctx context.Context, r *Redis, w *world) error {
 	for _, pod := range pods {
 		byName[pod.Metadata.Name] = pod
 	}
-	polled := c.poll(ctx, st, pods)
+	target := r.Status.TargetPrimary
+	if target == "" {
+		target = instanceName(r.Metadata.Name, 0)
+	}
+	polled := c.poll(ctx, "redis "+key, st, pods, target)
+	if ctx.Err() != nil {
+		return context.Cause(ctx)
+	}
 	settled := primarySettled(r.Status.TargetPrimary, holder, byName, st, polled)
 	safe := shrinkSafe(r, holder, byName, st, polled)
 	scale := replicasFor(r, holder, scaleAsRead(w.statefulSets[key].Spec.Replicas, st.appliedScale), settled, safe)
@@ -61,9 +72,7 @@ func (c *controller) reconcile(ctx context.Context, r *Redis, w *world) error {
 		rollout := *r.Status.Rollout
 		status.Rollout = &rollout
 	}
-	if status.TargetPrimary == "" {
-		status.TargetPrimary = instanceName(r.Metadata.Name, 0)
-	}
+	status.TargetPrimary = target
 	if holder != "" {
 		status.CurrentPrimary = holder
 		st.leaderlessSince = time.Time{}
@@ -71,7 +80,7 @@ func (c *controller) reconcile(ctx context.Context, r *Redis, w *world) error {
 		st.leaderlessSince = now
 	}
 
-	d := decision{c: c, r: r, st: st, status: &status, pods: byName, holder: holder, now: now, nodes: w.nodes, scale: scale, settled: settled}
+	d := decision{c: c, r: r, st: st, status: &status, pods: byName, holder: holder, now: now, polled: polled, nodes: w.nodes, scale: scale, settled: settled}
 	d.replica(ctx)
 	// A single instance fails over too, to itself: when it restarts with
 	// no data, only a failover starts the empty dataset it must serve.
@@ -112,14 +121,21 @@ type decision struct {
 	pods   map[string]Pod
 	nodes  map[string]Node
 	holder string
+	// now is when the pass decides, for the operator's own timers, and
+	// polled is when it polled the managers, for every check of whether
+	// one answered recently.
 	now    time.Time
+	polled time.Time
 	// scale is the StatefulSet's scale this pass applied.
 	scale int
 	// settled is primarySettled for this pass.
 	settled bool
-	// notes are the Events of this pass's decisions, which the pass
-	// posts once the status lands.
-	notes []eventNote
+	// notes, lines, and counts are the Events, log lines, and counters
+	// of this pass's decisions, which the pass posts, writes, and
+	// increments once the status lands.
+	notes  []eventNote
+	lines  []string
+	counts []prometheus.Counter
 	// quorumShort says why a pending failover waits for its quorum, and
 	// clearForce whether the pass removes the annotation that forced it.
 	quorumShort string
@@ -128,8 +144,9 @@ type decision struct {
 
 func (d *decision) subject() string { return "redis " + objectKey(d.r.Metadata) }
 
-// failover starts a failover when the primary's manager stops
-// answering, and names the next primary once every replica detached.
+// failover starts a failover when the primary's manager has missed
+// informative polls for failureThreshold (reconcile_poll.go), and names
+// the next primary once every replica detached.
 func (d *decision) failover() {
 	t := d.c.timings
 	if d.status.TargetPrimary == targetPending {
@@ -147,7 +164,7 @@ func (d *decision) failover() {
 	primary := d.status.TargetPrimary
 	reason := ""
 	switch {
-	case d.st.silentFor(primary, d.now) > t.failureThreshold && d.hasOtherCandidate(primary):
+	case d.st.silence(primary) >= t.failureThreshold && d.hasOtherCandidate(primary):
 		reason = fmt.Sprintf("the instance manager of %s has not answered for %s", primary, t.failureThreshold)
 	case d.holder == "" && d.targetCannotTake():
 		reason = fmt.Sprintf("%s restarted with no data and cannot take the primary lease", d.status.TargetPrimary)
@@ -157,9 +174,9 @@ func (d *decision) failover() {
 	if reason == "" {
 		return
 	}
-	d.c.log.printf("%s: failing over: %s", d.subject(), reason)
+	d.line("failing over: %s", reason)
 	d.note(eventWarning, "FailoverStarted", fmt.Sprintf("failing over from %s: %s", primary, reason))
-	d.c.readings.failovers.Inc()
+	d.count(d.c.readings.failovers)
 	d.status.TargetPrimary = targetPending
 	d.status.Switchover = nil
 	d.st.pendingSince = d.now
@@ -182,7 +199,7 @@ func (d *decision) choosePrimary() {
 	// name each of them.
 	for i := range d.scale {
 		name := instanceName(d.r.Metadata.Name, i)
-		report, ok := d.st.fresh(name, d.now, within)
+		report, ok := d.st.fresh(name, d.polled, within)
 		if !ok {
 			allAnswered = false
 			continue
@@ -214,11 +231,11 @@ func (d *decision) choosePrimary() {
 		d.status.CurrentPrimary = ""
 		d.st.pendingSince = time.Time{}
 		if d.status.replicating() {
-			d.c.log.printf("%s: every instance restarted with no data; %s copies the source again", d.subject(), first)
+			d.line("every instance restarted with no data; %s copies the source again", first)
 			d.note(eventWarning, "AllInstancesEmpty", fmt.Sprintf("every instance restarted with no data; %s copies the source again", first))
 			return
 		}
-		d.c.log.printf("%s: every instance restarted with no data; starting an empty dataset on %s", d.subject(), first)
+		d.line("every instance restarted with no data; starting an empty dataset on %s", first)
 		d.note(eventWarning, "AllInstancesEmpty", fmt.Sprintf("every instance restarted with no data; starting an empty dataset on %s", first))
 		d.setCondition("DataLost", ConditionTrue, "AllInstancesEmpty", "every instance restarted with no data, so the dataset started empty")
 		return
@@ -227,7 +244,7 @@ func (d *decision) choosePrimary() {
 		return
 	}
 	d.noteForced(best, counted)
-	d.c.log.printf("%s: %s is the next primary, at offset %d", d.subject(), best, bestOffset)
+	d.line("%s is the next primary, at offset %d", best, bestOffset)
 	d.note(eventNormal, "PrimaryChosen", fmt.Sprintf("%s is the next primary, at offset %d", best, bestOffset))
 	d.status.TargetPrimary = best
 	d.st.pendingSince = time.Time{}
@@ -248,7 +265,7 @@ func (d *decision) hasOtherCandidate(primary string) bool {
 // targetCannotTake reports whether the target answered that it has no
 // data, so it will never take the Lease, and waiting for it is no use.
 func (d *decision) targetCannotTake() bool {
-	report, ok := d.st.fresh(d.status.TargetPrimary, d.now, 2*d.c.timings.backstop)
+	report, ok := d.st.fresh(d.status.TargetPrimary, d.polled, 2*d.c.timings.backstop)
 	return ok && !report.HasData && !report.HoldsLease
 }
 

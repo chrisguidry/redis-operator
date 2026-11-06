@@ -201,18 +201,48 @@ func TestAFailedCanaryPostsItsRollback(t *testing.T) {
 	mustContainLine(t, lines, "Warning CanaryFailed: RolloutFailed is True: cache-2 did not hold the data on redis:does-not-exist within 5m0s: ImagePullBackOff")
 }
 
+// A decision that a newer version refused never took effect, so it
+// posts no Event, writes no line, and counts nothing. The next pass
+// decides again, and once its write lands, the decision counts once.
 func TestAStatusWriteThatConflictsPostsNothing(t *testing.T) {
 	t.Parallel()
-	h := startHarness(t, 3)
-	h.steady("cache-0", 3)
-	h.pass()
-	h.silence("cache-0")
-	status := redisResource.path(testNamespace, h.name) + "/status"
-	h.api.refuse("PATCH", status, 409)
+	cases := []struct {
+		name    string
+		cause   func(h *harness)
+		reason  string
+		line    string
+		counter string
+	}{
+		{"failover", func(h *harness) { h.silence("cache-0") }, "FailoverStarted", "failing over", "redis_operator_failovers_total"},
+		{"switchover", func(h *harness) {
+			h.api.update(nodesResource, "", "node-0", func(object map[string]any) {
+				object["spec"] = map[string]any{"unschedulable": true}
+			})
+		}, "SwitchoverStarted", "switching over", `redis_operator_switchovers_total{reason="NodeCordoned"}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			h := startHarness(t, 3)
+			h.steady("cache-0", 3)
+			h.pass()
+			c.cause(h)
+			status := redisResource.path(testNamespace, h.name) + "/status"
+			h.api.refuse("PATCH", status, 409)
 
-	h.passFor(8*time.Second, 2*time.Second)
+			h.passFor(8*time.Second, 2*time.Second)
 
-	mustNotContainReason(t, h.redisEvents(), "FailoverStarted")
+			mustNotContainReason(t, h.redisEvents(), c.reason)
+			mustMatch(t, h.linesWith(c.line), 0)
+			mustContainLine(t, scrape(t, h.c.readings), c.counter+" 0")
+
+			h.api.allow("PATCH", status)
+			h.passFor(2*time.Second, 2*time.Second)
+
+			mustMatch(t, h.linesWith(c.line), 1)
+			mustContainLine(t, scrape(t, h.c.readings), c.counter+" 1")
+		})
+	}
 }
 
 func TestAnEventAPIThatHangsDoesNotSlowAPass(t *testing.T) {

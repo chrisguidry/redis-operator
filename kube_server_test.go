@@ -88,10 +88,13 @@ type fakeKube struct {
 	// refusalsLeft holds how many more times a refusal answers, for a
 	// refusal that ends by itself.
 	refusalsLeft map[string]int
-	events       []fakeEvent
-	log          []fakeRequest
-	changed      chan struct{}
-	dropping     chan struct{}
+	// during holds a function for each "METHOD path" that runs while
+	// the next such request waits (kube_server_refuse_test.go).
+	during   map[string]func()
+	events   []fakeEvent
+	log      []fakeRequest
+	changed  chan struct{}
+	dropping chan struct{}
 }
 
 func startFakeKube(t *testing.T) *fakeKube {
@@ -251,6 +254,7 @@ func (f *fakeKube) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// watches always ends this one.
 	dropping := f.dropping
 	f.mutex.Unlock()
+	f.runDuring(r)
 	if f.refused(w, r) {
 		return
 	}

@@ -118,7 +118,7 @@ two instances share a machine.
 | Renew deadline | 10 s | a primary fences itself before its Lease can expire |
 | Renew period | 2 s | |
 | Operator poll of `/status` | 2 s | a watch event also starts a pass |
-| Failure threshold | 6 s | three missed polls before a failover starts |
+| Failure threshold | 6 s | how long the target's manager may miss informative polls before a failover starts, counted from the first one it missed; a poll is informative when the operator's context was live and at least one manager answered it |
 | Leaderless threshold | 21 s | the Lease has had no holder for this long after a primary held it, which is longer than a lease duration because a new target waits out the old Lease |
 | Detach wait | 5 s | how long a failover waits for every replica to detach before it names the next primary |
 | Switchover timeout | 10 s | the `FAILOVER ... TIMEOUT` the primary runs |
@@ -132,10 +132,17 @@ two instances share a machine.
 
 ## Failover, step by step
 
-1. A failover starts when the operator cannot reach the target
-   primary's `/status` for the failure threshold, when the Lease has had
-   no holder for the leaderless threshold, or when the target answers
-   that it restarted with no data and cannot take the Lease.
+1. A failover starts when the target primary's instance manager has
+   missed the operator's informative polls of `/status` for the failure
+   threshold, when the Lease has had no holder for the leaderless
+   threshold, or when the target answers that it restarted with no
+   data and cannot take the Lease. A poll that no manager answered says nothing about the
+   primary, because the operator's own network or a NetworkPolicy on
+   the status port looks the same, so it counts toward no silence. The
+   operator logs once that no manager answered, naming the status port.
+   A pass that waits on the API server after it polls measures every
+   report's age at the time of the poll, and a pass that runs after the
+   operator lost its Lease decides nothing.
 2. It writes `targetPrimary: pending`. Every instance manager that sees
    it detaches its Redis, so no replica keeps following an old primary
    that might still accept writes, and their offsets stop moving.
@@ -465,7 +472,7 @@ holder, or while the StatefulSet has fewer pods than `instances`.
 The operator posts a Kubernetes Event for each decision a person wants
 to read in `kubectl describe redis`, beside the log line it already
 writes. A condition says what is true now, an Event what just
-happened, and the log keeps every attempt and detail.
+happened, and the log keeps the detail.
 
 On a `Redis`, it posts one Event for each condition transition: a
 condition that is new, or whose status or reason changed. A condition
@@ -491,10 +498,13 @@ that way, and so is `NoPrimary` before the first primary took the
 Lease, because each new `Redis` starts that way. A failover, the
 instances all restarting empty, and a canary rolled back are Warnings.
 
-The decisions of a pass post their Events only after the status write
-lands. A write that a newer version refused lands nothing, and the next
-pass decides again, so an Event posted earlier could tell of a decision
-that never took effect. The pod deletes of a rollout post at once,
+The decisions of a pass post their Events, write their log lines, and
+increment `redis_operator_failovers_total` and
+`redis_operator_switchovers_total` only after the status write lands.
+A write that a newer version refused, or that failed, lands nothing,
+and the next pass decides again, so a record made earlier could tell of
+a decision that never took effect, and count it once for each pass that
+tried it. The pod deletes of a rollout post at once,
 because the delete happened whatever the status write does.
 
 An instance manager writes a Backup's end, so the operator learns of it
