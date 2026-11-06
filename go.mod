@@ -1,6 +1,6 @@
 module github.com/chrisguidry/redis-operator
 
-go 1.27.0
+go 1.27.3
 
 tool github.com/vladopajic/go-test-coverage/v2
 
