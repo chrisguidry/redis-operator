@@ -98,7 +98,10 @@ The design instead:
    unreachable address, which makes its Redis a read-only replica that
    keeps its data, and it closes its client connections. If every peer
    agrees with it, it keeps serving, so an API server outage alone stops
-   no healthy primary.
+   no healthy primary. Past the deadline it asks before each read of the
+   API server, and it asks every peer at once under one peer timeout, so
+   its writes stop within a peer timeout of the deadline, before the
+   target can take the Lease.
 4. **Redis fences itself too.** With replicas, every instance runs with
    `min-replicas-to-write` and `min-replicas-max-lag`, so a primary that
    loses its replicas refuses writes even if its instance manager is

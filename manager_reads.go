@@ -133,10 +133,12 @@ func due(now, last time.Time, period time.Duration) bool {
 // takes as the holder by its renew deadline, so a dial or an answer
 // that hangs cannot carry the step past the moment the holder must
 // stop serving or prove its peers agree. A holder past its deadline
-// still renews, so it serves again once the API server answers, and
-// each of its requests is bounded by a retry period, so every step
-// still reaches the isolation check. It measures the deadline on the
-// manager's clock and sets it on the wall clock.
+// runs the isolation check before its read (checkIsolationFirst), and
+// still renews, so it serves again once the API server answers. Each of
+// its requests is bounded by a retry period, so a step that cannot
+// reach the API server still ends in time for the next check. It
+// measures the deadline on the manager's clock and sets it on the wall
+// clock.
 func (m *manager) apiContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	if !m.lease.held() || m.lastRenew.IsZero() {
 		return context.WithCancel(ctx)

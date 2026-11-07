@@ -15,9 +15,36 @@ import (
 	"time"
 )
 
+// isolation is the outcome of an isolation check that a step ran
+// before its read of the API server.
+type isolation struct{ err error }
+
+// checkIsolationFirst runs the isolation check before the step's read
+// when the holder is past its renew deadline. A read past the deadline
+// waits up to a retry period for an API server that does not answer, so
+// a holder that checked only after it would serve that much longer while
+// the target may take the Lease. It returns nil when it ran no check.
+func (m *manager) checkIsolationFirst(ctx context.Context) *isolation {
+	if !m.lease.held() || !m.pastRenewDeadline(m.now()) {
+		return nil
+	}
+	info, err := m.server.replication(ctx)
+	if err != nil {
+		return nil
+	}
+	return &isolation{err: m.isolationCheck(ctx, info)}
+}
+
+// pastRenewDeadline reports whether the holder has gone the renew
+// deadline without a renewal.
+func (m *manager) pastRenewDeadline(now time.Time) bool {
+	return now.Sub(m.lastRenew) > m.config.renewDeadline
+}
+
 // stepAsHolder runs the primary, or hands the role over. api bounds
-// every API request by the renew deadline (manager_reads.go).
-func (m *manager) stepAsHolder(ctx, api context.Context, apiErr error, info replicationInfo) error {
+// every API request by the renew deadline (manager_reads.go). checked
+// is the isolation check the step ran before its read, or nil.
+func (m *manager) stepAsHolder(ctx, api context.Context, apiErr error, info replicationInfo, checked *isolation) error {
 	// The clock is read after the step's read of the decision, so a slow
 	// read never counts as time the Lease was renewed.
 	now := m.now()
@@ -36,7 +63,10 @@ func (m *manager) stepAsHolder(ctx, api context.Context, apiErr error, info repl
 	if m.lastRenew.IsZero() {
 		m.lastRenew = now
 	}
-	if now.Sub(m.lastRenew) > m.config.renewDeadline {
+	if m.pastRenewDeadline(now) {
+		if checked != nil {
+			return checked.err
+		}
 		return m.isolationCheck(ctx, info)
 	}
 	if apiErr != nil {
@@ -147,18 +177,28 @@ func (m *manager) isolationCheck(ctx context.Context, info replicationInfo) erro
 // peersAgree asks every other instance's manager which instance it
 // takes for the target. It agrees only when it asked one peer for each
 // other instance the Redis has, so a list of pods that lacks one, as an
-// old list can, never agrees for it.
+// old list can, never agrees for it. It asks them all at once under one
+// peer timeout, so a fence waits for the slowest peer and not for the
+// sum of them.
 func (m *manager) peersAgree(ctx context.Context) bool {
+	ctx, cancel := context.WithTimeout(ctx, peerTimeout)
+	defer cancel()
+	answers := make(chan bool, len(m.podIPs))
 	asked := 0
 	for name, ip := range m.podIPs {
 		if name == m.config.podName {
 			continue
 		}
-		report, err := m.readPeer(ctx, ip)
-		if err != nil || report.Target != m.config.podName {
+		asked++
+		go func() {
+			report, err := m.readPeer(ctx, ip)
+			answers <- err == nil && report.Target == m.config.podName
+		}()
+	}
+	for range asked {
+		if !<-answers {
 			return false
 		}
-		asked++
 	}
 	return asked >= m.instances-1
 }

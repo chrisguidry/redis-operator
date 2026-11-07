@@ -365,6 +365,7 @@ func (m *manager) step(ctx context.Context) {
 	// The report's time is on the wall clock, the clock the pause
 	// watch's beats are on.
 	started := time.Now()
+	checked := m.checkIsolationFirst(ctx)
 	api, cancel := m.apiContext(ctx)
 	defer cancel()
 	apiErr := m.readDecision(api, m.now())
@@ -398,7 +399,7 @@ func (m *manager) step(ctx context.Context) {
 
 	var actErr error
 	if m.lease.held() {
-		actErr = m.stepAsHolder(ctx, api, apiErr, info)
+		actErr = m.stepAsHolder(ctx, api, apiErr, info, checked)
 	} else if apiErr == nil {
 		actErr = m.stepAsOther(ctx, now, info)
 	}
