@@ -439,10 +439,14 @@ func (c *controller) writeStatus(ctx context.Context, r *Redis, status RedisStat
 		"metadata": map[string]any{"resourceVersion": r.Metadata.ResourceVersion},
 		"status":   fields,
 	}
+	c.watches[redisResource].store.wroteStatus(objectKey(r.Metadata), body)
 	err = c.client.mergePatchStatus(ctx, redisResource, r.Metadata.Namespace, r.Metadata.Name, patch, nil)
 	if errors.Is(err, errConflict) {
-		// The Redis changed since this pass read it. The watch brings
-		// the change, and the next pass decides again from it.
+		// The Redis changed since this pass read it. The change can be
+		// one whose event wakes no pass, such as this operator's own
+		// last status write, so the next pass runs at once and decides
+		// again from what the watch brought.
+		poke(c.wake)
 		return false, nil
 	}
 	return err == nil, err

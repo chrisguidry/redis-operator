@@ -41,11 +41,26 @@ var selectors = map[kubeResource]string{
 var trims = map[kubeResource]func(json.RawMessage) (json.RawMessage, error){
 	redisResource:            trimTo[Redis],
 	podsResource:             trimTo[Pod],
-	leasesWatched:            trimTo[Lease],
+	leasesWatched:            trimTo[leaseHolder],
 	statefulSetsResource:     trimTo[StatefulSet],
 	nodesResource:            trimTo[Node],
 	backupsResource:          trimTo[Backup],
 	scheduledBackupsResource: trimTo[ScheduledBackup],
+}
+
+// leaseHolder is the part of a primary Lease that a pass reads: its
+// key and its holder. A renewal moves the renew time, and can move the
+// generation, so its event leaves the trimmed copy as it was and wakes
+// no pass.
+type leaseHolder struct {
+	Metadata struct {
+		Name            string `json:"name"`
+		Namespace       string `json:"namespace"`
+		ResourceVersion string `json:"resourceVersion"`
+	} `json:"metadata"`
+	Spec struct {
+		HolderIdentity string `json:"holderIdentity,omitempty"`
+	} `json:"spec"`
 }
 
 // The operator's timings. They are fields of the controller so a test

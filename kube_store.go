@@ -19,8 +19,18 @@ package main
 // An object that does not decode is left out of the store, and every
 // other object applies. One bad object then costs only itself: the
 // pass does not see it, and the rest of its collection stays current.
+//
+// A change wakes a pass only when the trimmed object differs from the
+// stored copy, leaving out the resourceVersion and the status the
+// operator itself last wrote. Without the rule every write the
+// operator makes comes back as an event that runs a pass with nothing
+// to do, and so does every change to a field no pass reads, such as a
+// Job's count of ready pods. The rule decides wakes only: every change
+// still replaces the stored copy, because a write states the
+// resourceVersion it read.
 
 import (
+	"bytes"
 	"encoding/json"
 	"maps"
 	"slices"
@@ -41,6 +51,12 @@ type objectStore struct {
 	// rejected holds the error of each object that did not decode, so
 	// a relist that finds the same error reports nothing new.
 	rejected map[string]string
+	// written holds, by key, the status the operator last wrote, as its
+	// trimmed type encodes it.
+	written map[string]json.RawMessage
+	// wakes, when set, says whether a change under a key may wake a pass
+	// at all. It is set before the watch starts, and never after.
+	wakes func(key string) bool
 }
 
 func newObjectStore(trim func(json.RawMessage) (json.RawMessage, error), skipped func(key, reason string)) *objectStore {
@@ -49,6 +65,7 @@ func newObjectStore(trim func(json.RawMessage) (json.RawMessage, error), skipped
 		skipped:  skipped,
 		objects:  map[string]json.RawMessage{},
 		rejected: map[string]string{},
+		written:  map[string]json.RawMessage{},
 	}
 }
 
@@ -114,19 +131,22 @@ func (s *objectStore) replace(items []json.RawMessage) {
 }
 
 // put stores an object from an ADDED or MODIFIED event, and reports
-// whether the change wakes a pass, which every change does. Events arrive
-// in the order the API server made the changes, and resourceVersions
-// are opaque, so the newest event always wins. An object that does not
-// decode removes the older copy under its key, so the pass acts on no
-// version that the cluster has replaced.
+// whether the change wakes a pass. Events arrive in the order the API
+// server made the changes, and resourceVersions are opaque, so the
+// newest event always wins. An object that does not decode removes the
+// older copy under its key, so the pass acts on no version that the
+// cluster has replaced.
 func (s *objectStore) put(key string, object json.RawMessage) bool {
 	trimmed, err := s.trim(object)
 	s.mutex.Lock()
 	previous := s.rejected[key]
+	stored, held := s.objects[key]
+	wakes := held
 	if err != nil {
 		delete(s.objects, key)
 		s.rejected[key] = err.Error()
 	} else {
+		wakes = !held || differs(stored, trimmed, s.written[key])
 		s.objects[key] = trimmed
 		delete(s.rejected, key)
 	}
@@ -134,17 +154,75 @@ func (s *objectStore) put(key string, object json.RawMessage) bool {
 	if err != nil && previous != err.Error() {
 		s.skipped(key, err.Error())
 	}
-	return true
+	return wakes && s.mayWake(key)
 }
 
-// remove forgets an object, and reports whether the change wakes a
-// pass, which every change does.
+// remove forgets an object, and reports whether the store held it.
 func (s *objectStore) remove(key string) bool {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	_, held := s.objects[key]
 	delete(s.objects, key)
 	delete(s.rejected, key)
-	return true
+	delete(s.written, key)
+	return held && s.mayWake(key)
+}
+
+// wakeOnly limits the keys whose changes wake a pass to those wakes
+// accepts, for a store that holds more of a collection than the passes
+// act on. A pass still reads every object the store holds.
+func (s *objectStore) wakeOnly(wakes func(key string) bool) {
+	s.wakes = wakes
+}
+
+func (s *objectStore) mayWake(key string) bool {
+	return s.wakes == nil || s.wakes(key)
+}
+
+// wroteStatus records the status the operator is about to write to the
+// object under key, encoded as its trimmed type encodes it, so the
+// write's own event wakes no pass. It is recorded before the write,
+// because the watch can deliver the event before the write's answer
+// arrives. A status that the API server stores in another form wakes
+// one pass, which finds nothing to do.
+func (s *objectStore) wroteStatus(key string, status json.RawMessage) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	s.written[key] = status
+}
+
+// differs reports whether next differs from stored in what a pass
+// reads: any field but the resourceVersion, and the status unless it
+// is the one the operator wrote.
+func differs(stored, next, written json.RawMessage) bool {
+	var before, after map[string]json.RawMessage
+	if json.Unmarshal(stored, &before) != nil || json.Unmarshal(next, &after) != nil {
+		return true
+	}
+	if written != nil && bytes.Equal(after["status"], written) {
+		after["status"] = before["status"]
+	}
+	before["metadata"], after["metadata"] = withoutVersion(before["metadata"]), withoutVersion(after["metadata"])
+	return !maps.EqualFunc(before, after, func(a, b json.RawMessage) bool { return bytes.Equal(a, b) })
+}
+
+// withoutVersion is metadata with no resourceVersion.
+func withoutVersion(metadata json.RawMessage) json.RawMessage {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(metadata, &fields) != nil {
+		return metadata
+	}
+	delete(fields, "resourceVersion")
+	encoded, _ := json.Marshal(fields)
+	return encoded
+}
+
+// get returns the object under key as the store holds it.
+func (s *objectStore) get(key string) (json.RawMessage, bool) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	object, held := s.objects[key]
+	return object, held
 }
 
 // snapshot returns every object, in namespace/name order as a list

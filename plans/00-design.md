@@ -211,6 +211,16 @@ instance manager's `/status`. It serves Prometheus metrics, prefixed
 `CANARY_TIMEOUT` override the rollout timings of
 [04-upgrades.md](completed/04-upgrades.md).
 
+Its watches keep the rules of liken's operator guide, as
+healthchecks-operator's do, from the same `kube_watch.go` and
+`kube_store.go`: a watch that ends resumes from its last version, only a
+`410 Gone` lists again, and a watch's life from its `200` decides the
+backoff. Every event updates its store, and wakes a pass only when the
+trimmed object differs from the stored copy in more than its
+`resourceVersion` and the status the operator last wrote. A Lease is
+trimmed to its holder, so a renewal wakes nothing. A status write that
+gets `409 Conflict` wakes the next pass at once.
+
 For each `Redis` it applies a StatefulSet with `podManagementPolicy:
 Parallel` and `updateStrategy: OnDelete`. The StatefulSet gives stable
 pod names and volume claims. The operator decides which pod restarts and
