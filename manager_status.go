@@ -87,7 +87,8 @@ func (m *manager) currentReport() instanceReport {
 	return m.report
 }
 
-// serveStatus serves /status, /ready, and /healthz until ctx ends.
+// serveStatus serves /status, /ready, /healthz, and /metrics until ctx
+// ends.
 func (m *manager) serveStatus(ctx context.Context) (net.Addr, error) {
 	listener, err := net.Listen("tcp", net.JoinHostPort(m.config.podIP, strconv.Itoa(m.config.statusPort)))
 	if err != nil {
@@ -115,6 +116,7 @@ func (m *manager) serveStatus(ctx context.Context) (net.Addr, error) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
 	})
+	mux.Handle("/metrics", m.readings.handler())
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	context.AfterFunc(ctx, func() { _ = server.Close() })
 	go func() { _ = server.Serve(listener) }()

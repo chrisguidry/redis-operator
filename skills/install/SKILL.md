@@ -203,6 +203,14 @@ that selects `app: redis-operator`. The series:
 | `redis_operator_reconcile_duration_seconds` | how long each pass took, as a histogram |
 | `redis_operator_status_writes_total{resource}` | status writes that landed, on `redis`, `backups`, and `scheduledbackups`; a steady `Redis` writes none |
 | `redis_operator_api_requests_total{verb,resource,code}` | requests to the Kubernetes API server, by verb, resource, and answer code, or `error` when none came |
+
+Each instance manager serves its own metrics on port 9123, the
+container port named `status`, at `/metrics`: the Go and process
+series of the manager alone, apart from the server in the same
+container, and `redis_operator_manager_api_requests_total{verb,resource,code}`,
+its requests to the API server. A steady manager reads its `Redis`
+every second, renews or reads the primary Lease every 3 seconds, and
+lists its pods and `Backup`s and reads its Secrets every 10 seconds.
 | `redis_operator_replica_lag_bytes{namespace,redis}` | bytes the holder of a `Redis` in replica mode is behind its source, as last measured |
 
 Every Redis instance pod also runs redis_exporter in a container named
@@ -312,6 +320,11 @@ spec:
       ports:
         - {port: 9123, protocol: TCP}
 ```
+
+The monitoring component's PodMonitor `redis` also scrapes each
+instance manager's `/metrics` on the port named `status`. A namespace
+whose policies deny ingress by default must admit Prometheus on that
+port as well as on `metrics`.
 
 The Redis pods also reach each other on 6379, for replication, and on
 9123, where a primary that cannot renew its Lease asks its peers which

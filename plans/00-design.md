@@ -184,13 +184,14 @@ The instance manager:
 - carries out the role that `targetPrimary` and the Lease give it, as
   described above;
 - sets the `Redis`'s ACL users on its own server, and keeps its TLS
-  certificate loaded, both read from Secrets on every step
+  certificate loaded, both read from Secrets every 10 seconds
   ([01-high-availability.md](completed/01-high-availability.md));
 - serves its state on port 9123: `/status` for the operator, `/ready`
   for the readiness probe, `/healthz` for the liveness probe, and
   serves neither `/status` nor a ready `/ready` from a report taken
   before its process was paused
-  ([01-high-availability.md](completed/01-high-availability.md));
+  ([01-high-availability.md](completed/01-high-availability.md)), and
+  `/metrics`, its own process and its requests to the API server;
 - takes the snapshot of a running `Backup` that names it, restores a new
   `Redis` from a snapshot before its server starts, and makes the Lease
   holder follow the source in replica mode
@@ -198,6 +199,41 @@ The instance manager:
 
 It talks to Redis over RESP with a small client in this repository, and
 to the API server with the same hand-written client as the operator.
+
+Every read is a direct request, which etcd answers with a quorum read,
+because the manager's reads decide fencing and promotion. It reads each
+thing only as often as a decision needs it:
+
+- the `Redis` every step, so a renewal always follows a fresh read of
+  `targetPrimary`, and a replica detaches within a step of `pending`;
+- the Lease never as its holder, which renews from the answer to its
+  own last write and reads again only after a `409` or a `404`; every
+  step as the target, so it takes a released Lease at once; and every
+  2 seconds otherwise;
+- the pods every 10 seconds, and on every step of a primary that steps
+  down and waits for its pod to lose the primary label. A step that
+  lists no pods takes the label as still there, and a holder that
+  cannot renew agrees with its peers only when it asked one for each
+  other instance, so an old list never keeps it serving;
+- the `Backup`s and the Secrets of the users and of TLS every 10
+  seconds.
+
+As the holder, every API request a step makes ends by the renew
+deadline, so a request that hangs cannot carry a step past the moment
+the holder must fence itself or prove its peers agree. Past the
+deadline, each request ends within a retry period, so the holder still
+renews once the API server answers.
+
+The manager keeps two facts the API server does not hold, besides what
+time measures. It remembers the UID of each `Backup` it uploaded, so a
+`Backup` whose `Completed` patch did not land, or that a list read
+before the patch, is not taken twice. It remembers the
+`min-replicas-to-write` its server runs, as it last read or set it, so
+a steady primary sends no `CONFIG GET` or `CONFIG SET` on each step; it
+reads the value back every 30 seconds, so a change made by hand is put
+right. The second `INFO replication` of each step stays, because a
+peer's `FAILOVER` can change the server's role without this manager
+acting.
 
 ## The operator
 

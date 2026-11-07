@@ -17,7 +17,8 @@ spec:
     - port: metrics
 ---
 # Every Redis instance in every namespace: each pod's redis_exporter
-# container, on the port named metrics. The Prometheus Operator labels
+# container, on the port named metrics, and its instance manager, on
+# the port named status. The Prometheus Operator labels
 # each series with its namespace and pod. The relabelings add the
 # Redis's name, from the label every instance pod carries, and the role
 # the operator wrote on the pod.
@@ -42,6 +43,15 @@ spec:
         operator: Exists
   podMetricsEndpoints:
     - port: metrics
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_label_redis_guid_foo_cluster]
+          targetLabel: redis
+        - sourceLabels: [__meta_kubernetes_pod_label_redis_guid_foo_role]
+          targetLabel: redis_role
+    # The instance manager's own process and its requests to the API
+    # server, on its status port.
+    - port: status
+      path: /metrics
       relabelings:
         - sourceLabels: [__meta_kubernetes_pod_label_redis_guid_foo_cluster]
           targetLabel: redis
