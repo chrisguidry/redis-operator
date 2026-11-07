@@ -171,6 +171,8 @@ func (s *objectStore) remove(key string) bool {
 // wakeOnly limits the keys whose changes wake a pass to those wakes
 // accepts, for a store that holds more of a collection than the passes
 // act on. A pass still reads every object the store holds.
+// healthchecks-operator calls it for the Jobs it watches; this file is
+// the same, byte for byte, in redis-operator and healthchecks-operator.
 func (s *objectStore) wakeOnly(wakes func(key string) bool) {
 	s.wakes = wakes
 }

@@ -14,9 +14,9 @@ package main
 //   - The pods are listed every slow read period, when the holder or the
 //     target changes, so the address this instance follows or hands
 //     over to is current, and on every step of a primary that steps
-//     down, which waits for its pod to lose the primary label. A step that lists no pods leaves labeledPrimary
-//     true, so a stale list never lets a primary stop holding writes
-//     early.
+//     down, which waits for its pod to lose the primary label. A step
+//     that lists no pods leaves labeledPrimary true, so a stale list
+//     never lets a primary stop holding writes early.
 //   - The Backups, and the Secrets of the users and of TLS, are read
 //     every slow read period, so a change to them applies within it.
 //

@@ -25,7 +25,7 @@ package main
 // The duration and the renew deadline are client-go's defaults, from
 // k8s.io/client-go/tools/leaderelection. The retry period is longer
 // than client-go's, because every try is a request to the API server,
-// and the deadline still holds three tries. It costs a standby that
+// and the deadline still holds several tries. It costs a standby that
 // much longer to notice a Lease its leader released.
 
 import (

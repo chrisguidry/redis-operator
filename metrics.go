@@ -195,9 +195,8 @@ func (m *metrics) handler() http.Handler {
 }
 
 // serve listens on address and serves /metrics and /healthz until ctx
-// ends. It
-// listens before it returns, so a port that is in use is an error for
-// the caller, and it returns the address it listens on.
+// ends. It listens before it returns, so a port that is in use is an
+// error for the caller, and it returns the address it listens on.
 func (m *metrics) serve(ctx context.Context, address string) (net.Addr, error) {
 	listener, err := net.Listen("tcp", address)
 	if err != nil {

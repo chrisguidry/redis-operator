@@ -13,9 +13,10 @@ package main
 //     from the last resourceVersion it delivered, with no list. A watch
 //     from no version replays every object, so it costs a list.
 //   - Only a 410 Gone lists again at once, because the API server no
-//     longer holds the version. A 410 from the watch that the list
-//     opened waits out the backoff first, so an API server that answers
-//     410 to every version is listed at the backoff's pace. An ERROR
+//     longer holds the version. A 410 from a watch that a list after a
+//     410 opened, and that ended within minLife, waits out the backoff
+//     first, so an API server that answers 410 to every version is
+//     listed at the backoff's pace. An ERROR
 //     event of another code, or an event that does not decode, waits
 //     out the backoff and then lists, because the store may have missed
 //     what the rest of the stream held.
