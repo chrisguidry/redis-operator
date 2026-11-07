@@ -76,19 +76,19 @@ func TestTheHoldersRequestsEndByTheRenewDeadline(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name    string
-		renewed time.Time
+		renewed func() time.Time
 		within  time.Duration
 	}{
-		{"inside the deadline", time.Now().Add(-9 * time.Second), time.Second},
-		{"past the deadline", time.Now().Add(-time.Minute), 3 * time.Second},
-		{"before the first renewal", time.Time{}, 3 * time.Second},
+		{"inside the deadline", func() time.Time { return time.Now().Add(-9 * time.Second) }, time.Second},
+		{"past the deadline", func() time.Time { return time.Now().Add(-time.Minute) }, 3 * time.Second},
+		{"before the first renewal", func() time.Time { return time.Time{} }, 3 * time.Second},
 	}
 	for _, one := range cases {
 		t.Run(one.name, func(t *testing.T) {
 			t.Parallel()
 			m := newManager(managerConfig{podName: "cache-0", renewDeadline: 10 * time.Second, retryPeriod: 3 * time.Second}, nil, &syncBuffer{})
 			m.lease.observed.HolderIdentity = "cache-0"
-			m.lastRenew = one.renewed
+			m.lastRenew = one.renewed()
 
 			ctx, cancel := m.apiContext(context.Background())
 			defer cancel()
