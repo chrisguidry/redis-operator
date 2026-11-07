@@ -46,7 +46,8 @@ func (c *controller) reconcile(ctx context.Context, r *Redis, w *world) error {
 	if target == "" {
 		target = instanceName(r.Metadata.Name, 0)
 	}
-	polled := c.poll(ctx, "redis "+key, st, pods, target)
+	st.pollView = c.polls(ctx, r, pods, target)
+	polled := st.at
 	if ctx.Err() != nil {
 		return context.Cause(ctx)
 	}

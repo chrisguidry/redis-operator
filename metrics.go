@@ -40,6 +40,8 @@ type metrics struct {
 	switchovers     *prometheus.CounterVec
 	leader          prometheus.Gauge
 	replicaLag      *prometheus.GaugeVec
+	polls           *prometheus.CounterVec
+	pollDuration    prometheus.Histogram
 }
 
 func newMetrics(version string) *metrics {
@@ -65,6 +67,15 @@ func newMetrics(version string) *metrics {
 			Name: metricsPrefix + "replica_lag_bytes",
 			Help: "How many bytes the holder of a Redis in replica mode is behind its source, as the operator last measured it.",
 		}, []string{"namespace", "redis"}),
+		polls: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: metricsPrefix + "polls_total",
+			Help: "Polls of a Redis's instance managers, by outcome: informative when a manager answered, unanswered when none did, canceled when the operator stopped first.",
+		}, []string{"outcome"}),
+		pollDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    metricsPrefix + "poll_duration_seconds",
+			Help:    "How long a poll of a Redis's instance managers took, from the first request to the last answer.",
+			Buckets: []float64{0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2},
+		}),
 		leader: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: metricsPrefix + "leader",
 			Help: "1 while this replica holds the Lease and does the work, and 0 while it waits as a standby.",
@@ -83,7 +94,7 @@ func newMetrics(version string) *metrics {
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		buildInfo,
-		m.reconcileErrors, m.watchRestarts, m.failovers, m.switchovers, m.leader, m.replicaLag,
+		m.reconcileErrors, m.watchRestarts, m.failovers, m.switchovers, m.leader, m.replicaLag, m.polls, m.pollDuration,
 	)
 
 	// Every series starts at zero on the first scrape. Prometheus
@@ -91,6 +102,9 @@ func newMetrics(version string) *metrics {
 	// appears at 1 has no earlier reading.
 	for _, resource := range watchedResources {
 		m.watchRestarts.WithLabelValues(resource)
+	}
+	for _, outcome := range []string{pollInformative, pollUnanswered, pollCanceled} {
+		m.polls.WithLabelValues(outcome)
 	}
 	for _, reason := range []string{reasonNodeCordoned, reasonPodDeleted, reasonRollout, reasonScaleDown} {
 		m.switchovers.WithLabelValues(reason)
@@ -100,6 +114,11 @@ func newMetrics(version string) *metrics {
 
 func (m *metrics) watchRestarted(resource string) func() {
 	return m.watchRestarts.WithLabelValues(resource).Inc
+}
+
+func (m *metrics) observePoll(outcome string, took time.Duration) {
+	m.polls.WithLabelValues(outcome).Inc()
+	m.pollDuration.Observe(took.Seconds())
 }
 
 func (m *metrics) setLeader(leading bool) {

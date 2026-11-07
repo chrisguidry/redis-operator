@@ -55,7 +55,7 @@ operator (no argument), `manager`, `install DIR`, and `version`.
   plan.
 - The operator is level-triggered. It keeps no state that the API
   server does not hold, except what time measures (`redisState` in
-  `reconcile.go`). Each decision is a write to a status field, made with
+  `reconcile.go`, and each Redis's poller in `reconcile_poll.go`). Each decision is a write to a status field, made with
   the `resourceVersion` the pass read, so a stale pass fails.
 - The operator makes children with server-side apply, and skips a write
   when the body equals what it applied last.

@@ -191,6 +191,8 @@ that selects `app: redis-operator`. The series:
 | `redis_operator_failovers_total` | failovers started, counted once the start is written to the `Redis`'s status |
 | `redis_operator_switchovers_total{reason}` | planned switchovers started, by reason: `NodeCordoned`, `PodDeleted`, `Rollout`, or `ScaleDown`, counted once the start is written to the `Redis`'s status |
 | `redis_operator_watch_restarts_total{resource}` | watches that ended and were opened again |
+| `redis_operator_polls_total{outcome}` | polls of a `Redis`'s instance managers: `informative` when one answered, `unanswered` when none did, `canceled` when the operator stopped first |
+| `redis_operator_poll_duration_seconds` | how long each poll took, as a histogram |
 | `redis_operator_replica_lag_bytes{namespace,redis}` | bytes the holder of a `Redis` in replica mode is behind its source, as last measured |
 
 Every Redis instance pod also runs redis_exporter in a container named
@@ -270,7 +272,7 @@ skill says what to read for each.
 ## NetworkPolicies
 
 The operator polls each instance manager's `/status` on port 9123 of
-every Redis pod, every 2 seconds. In a namespace whose policies deny
+every Redis pod, every second. In a namespace whose policies deny
 ingress by default, admit the operator's pods on that port. Without
 it, the operator reaches no instance manager and logs
 `no instance manager answered on status port 9123` once for each

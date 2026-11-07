@@ -38,6 +38,7 @@ func TestMetricsStartEverySeriesAtZero(t *testing.T) {
 		`redis_operator_switchovers_total{reason="NodeCordoned"} 0`,
 		`redis_operator_watch_restarts_total{resource="redis"} 0`,
 		"redis_operator_leader 0",
+		`redis_operator_polls_total{outcome="unanswered"} 0`,
 	} {
 		mustMatch(t, slices.Contains(samples, want), true)
 	}

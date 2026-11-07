@@ -205,8 +205,17 @@ The operator runs two replicas that elect a leader through a Lease, as
 healthchecks-operator does. It talks to the API server over HTTP with
 no client-go and no controller framework. It reconciles from watches of
 `Redis`, Pods, Leases, StatefulSets, Nodes, `Backup`s, and
-`ScheduledBackup`s, plus a timer every 2 seconds that polls each
-instance manager's `/status`. It serves Prometheus metrics, prefixed
+`ScheduledBackup`s, and from a poll of each instance manager's
+`/status`. Each `Redis` has a poller, keyed by its UID, that asks every
+manager once a second on the leader's context, apart from the passes.
+Each pass decides from a snapshot of the latest whole poll, because a
+scale-down and a failover's choice of the next primary need the
+reports of one poll together. The poller wakes a pass when a report's
+role, link, readiness, or error changes, and when the target's silence
+reaches the failure threshold, so a failover waits for no timer. A
+backstop pass every 2 seconds covers what time moves and no event
+announces: a pending failover's wait, a switchover's deadline, a
+canary's soak, and backup schedules. It serves Prometheus metrics, prefixed
 `redis_operator_`, on port 9200, or on `METRICS_PORT`. `CANARY_SOAK` and
 `CANARY_TIMEOUT` override the rollout timings of
 [04-upgrades.md](completed/04-upgrades.md).

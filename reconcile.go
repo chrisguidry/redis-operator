@@ -1,11 +1,13 @@
 package main
 
-// The operator's loop is level-triggered. A watch event or the backstop
-// ticker wakes it, and each pass reads every Redis and the pods, Leases,
-// StatefulSets, and Nodes it watches from the watches' stores, polls
-// each instance manager's /status, and reconciles each Redis. A
-// restarted operator lists everything again, and starts correct: the
-// decision it acts on is in each Redis's status, not in its memory.
+// The operator's loop is level-triggered. A watch event, a poll that
+// changed what a decision reads, or the backstop ticker wakes it, and
+// each pass reads every Redis and the pods, Leases, StatefulSets, and
+// Nodes it watches from the watches' stores, reads the latest poll of
+// each Redis's instance managers (reconcile_poll.go), and reconciles
+// each Redis. A restarted operator lists everything again, and starts
+// correct: the decision it acts on is in each Redis's status, not in
+// its memory.
 //
 // The memory holds only what time measures: when each instance manager
 // last answered, since when it has missed the polls that other managers
@@ -66,9 +68,13 @@ type leaseHolder struct {
 // The operator's timings. They are fields of the controller so a test
 // can shorten them.
 type timings struct {
-	// backstop is how often a pass runs with nothing to prompt it. It is
-	// also how often the instance managers are polled.
-	backstop time.Duration
+	// backstop is how often a pass runs with nothing to prompt it. It
+	// covers the decisions that time moves and no event announces: a
+	// pending failover's wait for its replicas, a switchover's deadline,
+	// a canary's soak, and a backup's schedule. pollPeriod is how often
+	// each Redis's instance managers are polled.
+	backstop   time.Duration
+	pollPeriod time.Duration
 	// failureThreshold is how long the primary's manager may miss
 	// informative polls before a failover starts, counted from the first
 	// one it missed (reconcile_poll.go).
@@ -102,6 +108,7 @@ type timings struct {
 
 var defaultTimings = timings{
 	backstop:            2 * time.Second,
+	pollPeriod:          time.Second,
 	failureThreshold:    6 * time.Second,
 	leaderlessThreshold: primaryLeaseDuration + 6*time.Second,
 	pendingWait:         5 * time.Second,
@@ -122,28 +129,26 @@ type controller struct {
 	log        *lineLog
 	events     *eventRecorder
 	wake       chan struct{}
+	pollWake   chan struct{}
 	timings    timings
 	images     images
 	statusPort int
 	poller     *http.Client
 	watches    map[kubeResource]*collectionWatch
 
-	// states and backupPhases are read and written by the pass only.
+	// states, pollers, and backupPhases are read and written by the pass
+	// only. polling runs the pollers inside run, and is nil outside it,
+	// where each pass polls once itself.
 	states       map[string]*redisState
+	pollers      map[string]*instancePoller
+	polling      *sync.WaitGroup
 	backupPhases map[string]string
 }
 
 // redisState is what the operator remembers about one Redis.
 type redisState struct {
-	// lastSeen is when each instance manager last answered, and reports
-	// what it answered then.
-	lastSeen map[string]time.Time
-	reports  map[string]instanceReport
-	// informedAt is the time of the latest informative poll, and
-	// missedSince holds, for each instance, the first informative poll
-	// it missed since it last answered (reconcile_poll.go).
-	informedAt  time.Time
-	missedSince map[string]time.Time
+	// pollView is the poll that this Redis's latest pass decided from.
+	pollView
 	// pendingSince is when the operator wrote targetPrimary: pending.
 	pendingSince time.Time
 	// leaderlessSince is when the Lease was last seen with no holder,
@@ -175,11 +180,13 @@ func newController(client *kubeClient, readings *metrics, imgs images, now func(
 		now:          now,
 		log:          newLineLog(log),
 		wake:         make(chan struct{}, 1),
+		pollWake:     make(chan struct{}, 1),
 		timings:      defaultTimings,
 		images:       imgs,
 		statusPort:   statusPort,
 		watches:      map[kubeResource]*collectionWatch{},
 		states:       map[string]*redisState{},
+		pollers:      map[string]*instancePoller{},
 		backupPhases: map[string]string{},
 	}
 	c.events = newEventRecorder(client, now, c.log)
@@ -204,6 +211,7 @@ func (c *controller) run(ctx context.Context) error {
 	}
 	var running sync.WaitGroup
 	defer running.Wait()
+	c.polling = &running
 	c.watch(ctx, &running, versions)
 	running.Go(func() { c.events.run(ctx, c.timings.eventRetryWait, c.timings.eventTimeout) })
 
@@ -221,6 +229,7 @@ func (c *controller) run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-c.wake:
+		case <-c.pollWake:
 		case <-ticker.C:
 		}
 	}
@@ -345,12 +354,13 @@ func (c *controller) pass(ctx context.Context) {
 			delete(c.states, uid)
 		}
 	}
+	c.forgetPollers(live)
 }
 
 func (c *controller) state(r *Redis) *redisState {
 	st, ok := c.states[r.Metadata.UID]
 	if !ok {
-		st = &redisState{lastSeen: map[string]time.Time{}, reports: map[string]instanceReport{}, missedSince: map[string]time.Time{}, applied: map[string]string{}}
+		st = &redisState{applied: map[string]string{}}
 		c.states[r.Metadata.UID] = st
 	}
 	return st
