@@ -113,6 +113,9 @@ type kubeClient struct {
 	// retryUnit is one second of a 429's Retry-After. It is a field so a
 	// test waits milliseconds.
 	retryUnit time.Duration
+	// observe, when set, counts each request by its verb, its resource,
+	// and its answer's code (kube_requests.go).
+	observe func(verb, resource, code string)
 }
 
 // newKubeClient builds a client from its parts. inClusterKubeClient
@@ -176,7 +179,12 @@ func (c *kubeClient) send(ctx context.Context, method, path, contentType string,
 	if body != nil {
 		req.Header.Set("Content-Type", contentType)
 	}
-	return c.http.Do(req)
+	resp, err := c.http.Do(req)
+	if c.observe != nil {
+		resource, _ := requestResource(path)
+		c.observe(requestVerb(method, path, req.URL.Query().Get("watch") == "true"), resource, requestCode(resp, err))
+	}
+	return resp, err
 }
 
 // request makes one request and decodes the answer into out. A 429

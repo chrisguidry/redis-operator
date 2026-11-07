@@ -42,6 +42,10 @@ type metrics struct {
 	replicaLag      *prometheus.GaugeVec
 	polls           *prometheus.CounterVec
 	pollDuration    prometheus.Histogram
+	passes          *prometheus.CounterVec
+	passDuration    prometheus.Histogram
+	statusWrites    *prometheus.CounterVec
+	apiRequests     *prometheus.CounterVec
 }
 
 func newMetrics(version string) *metrics {
@@ -76,6 +80,23 @@ func newMetrics(version string) *metrics {
 			Help:    "How long a poll of a Redis's instance managers took, from the first request to the last answer.",
 			Buckets: []float64{0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2},
 		}),
+		passes: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: metricsPrefix + "passes_total",
+			Help: "Reconcile passes, by what woke them: start, event, poll, or backstop.",
+		}, []string{"cause"}),
+		passDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    metricsPrefix + "reconcile_duration_seconds",
+			Help:    "How long a reconcile pass over every Redis and backup took.",
+			Buckets: []float64{0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
+		}),
+		statusWrites: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: metricsPrefix + "status_writes_total",
+			Help: "Status writes that landed, by resource.",
+		}, []string{"resource"}),
+		apiRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: metricsPrefix + "api_requests_total",
+			Help: "Requests to the Kubernetes API server, by verb, resource, and the code it answered, or error for no answer.",
+		}, []string{"verb", "resource", "code"}),
 		leader: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: metricsPrefix + "leader",
 			Help: "1 while this replica holds the Lease and does the work, and 0 while it waits as a standby.",
@@ -94,7 +115,7 @@ func newMetrics(version string) *metrics {
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		buildInfo,
-		m.reconcileErrors, m.watchRestarts, m.failovers, m.switchovers, m.leader, m.replicaLag, m.polls, m.pollDuration,
+		m.reconcileErrors, m.watchRestarts, m.failovers, m.switchovers, m.leader, m.replicaLag, m.polls, m.pollDuration, m.passes, m.passDuration, m.statusWrites, m.apiRequests,
 	)
 
 	// Every series starts at zero on the first scrape. Prometheus
@@ -102,6 +123,12 @@ func newMetrics(version string) *metrics {
 	// appears at 1 has no earlier reading.
 	for _, resource := range watchedResources {
 		m.watchRestarts.WithLabelValues(resource)
+	}
+	for _, cause := range []string{passStart, passEvent, passPoll, passBackstop} {
+		m.passes.WithLabelValues(cause)
+	}
+	for _, resource := range []string{redisResource.Resource, backupsResource.Resource, scheduledBackupsResource.Resource} {
+		m.statusWrites.WithLabelValues(resource)
 	}
 	for _, outcome := range []string{pollInformative, pollUnanswered, pollCanceled} {
 		m.polls.WithLabelValues(outcome)
@@ -114,6 +141,22 @@ func newMetrics(version string) *metrics {
 
 func (m *metrics) watchRestarted(resource string) func() {
 	return m.watchRestarts.WithLabelValues(resource).Inc
+}
+
+// The causes of a pass, by the label that counts them.
+const (
+	passStart    = "start"
+	passEvent    = "event"
+	passPoll     = "poll"
+	passBackstop = "backstop"
+)
+
+func (m *metrics) observeRequest(verb, resource, code string) {
+	m.apiRequests.WithLabelValues(verb, resource, code).Inc()
+}
+
+func (m *metrics) wroteStatus(resource kubeResource) {
+	m.statusWrites.WithLabelValues(resource.Resource).Inc()
 }
 
 func (m *metrics) observePoll(outcome string, took time.Duration) {

@@ -95,6 +95,7 @@ func runOperator(ctx context.Context, getenv func(string) string, log io.Writer)
 		return err
 	}
 	readings := newMetrics(version)
+	client.observe = readings.observeRequest
 	address, err := readings.serve(ctx, fmt.Sprintf(":%d", metricsPort))
 	if err != nil {
 		return fmt.Errorf("serving metrics: %w", err)

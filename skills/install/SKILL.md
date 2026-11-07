@@ -193,6 +193,10 @@ that selects `app: redis-operator`. The series:
 | `redis_operator_watch_restarts_total{resource}` | watches that ended and were opened again |
 | `redis_operator_polls_total{outcome}` | polls of a `Redis`'s instance managers: `informative` when one answered, `unanswered` when none did, `canceled` when the operator stopped first |
 | `redis_operator_poll_duration_seconds` | how long each poll took, as a histogram |
+| `redis_operator_passes_total{cause}` | reconcile passes, by what woke them: `start`, `event` for a watched change, `poll` for a manager's report that changed, or `backstop` |
+| `redis_operator_reconcile_duration_seconds` | how long each pass took, as a histogram |
+| `redis_operator_status_writes_total{resource}` | status writes that landed, on `redis`, `backups`, and `scheduledbackups`; a steady `Redis` writes none |
+| `redis_operator_api_requests_total{verb,resource,code}` | requests to the Kubernetes API server, by verb, resource, and answer code, or `error` when none came |
 | `redis_operator_replica_lag_bytes{namespace,redis}` | bytes the holder of a `Redis` in replica mode is behind its source, as last measured |
 
 Every Redis instance pod also runs redis_exporter in a container named

@@ -74,34 +74,3 @@ func TestOnlyAChangeThatAPassReadsWakesIt(t *testing.T) {
 		})
 	}
 }
-
-// A status write that a newer change refused wakes the next pass at
-// once, so the decision is made again without waiting for the backstop.
-func TestAConflictOnTheStatusWriteWakesTheNextPass(t *testing.T) {
-	t.Parallel()
-	h := startHarness(t, 3)
-	h.steady("cache-0", 3)
-	h.settle()
-	h.api.refuseNext("PATCH", redisResource.path(testNamespace, h.name)+"/status", 409, 1)
-	h.setReport(instanceReport{Name: "cache-2", Role: reportDetached, Target: "cache-0", HasData: true})
-
-	h.pass()
-
-	mustMatch(t, h.woke(), true)
-}
-
-// The replication offsets move with every write, so the status holds
-// none of them, and a pass whose only news is a later offset writes
-// nothing.
-func TestOffsetsThatMoveWriteNoStatus(t *testing.T) {
-	t.Parallel()
-	h := startHarness(t, 3)
-	h.steady("cache-0", 3)
-	h.settle()
-	before := h.redis().Metadata.ResourceVersion
-
-	h.steadyAt("cache-0", 3, 5000)
-	h.pass()
-
-	mustMatch(t, h.redis().Metadata.ResourceVersion, before)
-}

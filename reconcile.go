@@ -217,20 +217,24 @@ func (c *controller) run(ctx context.Context) error {
 
 	ticker := time.NewTicker(c.timings.backstop)
 	defer ticker.Stop()
-	for {
+	for cause := passStart; ; {
 		// select picks at random among the cases that are ready, so a
 		// wake or a tick can win over a context that already ended, and
 		// a pass on it would reach no instance manager.
 		if ctx.Err() != nil {
 			return nil
 		}
+		c.readings.passes.WithLabelValues(cause).Inc()
 		c.pass(ctx)
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-c.wake:
+			cause = passEvent
 		case <-c.pollWake:
+			cause = passPoll
 		case <-ticker.C:
+			cause = passBackstop
 		}
 	}
 }
@@ -321,6 +325,8 @@ func objectKey(meta ObjectMeta) string {
 // requests fail because the operator stopped, not because a Redis is
 // unwell, so it decides nothing and counts no error.
 func (c *controller) pass(ctx context.Context) {
+	began := time.Now()
+	defer func() { c.readings.passDuration.Observe(time.Since(began).Seconds()) }()
 	w, err := c.read()
 	if err != nil {
 		c.log.fault("reading the cluster", topicReconcile, errorText(err))
