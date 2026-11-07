@@ -78,3 +78,16 @@ func TestHealthzFailsUntilTheLeadersWatchesHaveListed(t *testing.T) {
 		})
 	}
 }
+
+// The leader measures the replica lag, so an operator that loses its
+// Lease exports none of it as a standby.
+func TestAStandbyExportsNoLag(t *testing.T) {
+	t.Parallel()
+	m := newMetrics("dev")
+	m.setLeader(true)
+	m.replicaLag.WithLabelValues(testNamespace, "cache").Set(5)
+
+	m.setLeader(false)
+
+	mustMatch(t, len(lagSeries(t, m)), 0)
+}

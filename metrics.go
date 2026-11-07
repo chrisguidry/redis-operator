@@ -180,6 +180,9 @@ func (m *metrics) setLeader(leading bool) {
 		m.leader.Set(1)
 	} else {
 		m.leader.Set(0)
+		// Only the leader measures the replica lag, so a standby's last
+		// values would go stale while the leader exports the live ones.
+		m.replicaLag.Reset()
 	}
 }
 

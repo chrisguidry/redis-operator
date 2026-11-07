@@ -149,6 +149,9 @@ type controller struct {
 type redisState struct {
 	// pollView is the poll that this Redis's latest pass decided from.
 	pollView
+	// namespace and name are the Redis's, so the operator can delete its
+	// metric series once the Redis is gone.
+	namespace, name string
 	// pendingSince is when the operator wrote targetPrimary: pending.
 	pendingSince time.Time
 	// leaderlessSince is when the Lease was last seen with no holder,
@@ -345,13 +348,14 @@ func (c *controller) pass(ctx context.Context) {
 		return
 	}
 	c.log.clear("reading the cluster", topicReconcile)
-	live := map[string]bool{}
+	live, named := map[string]bool{}, map[string]bool{}
 	for index := range w.redis {
 		if ctx.Err() != nil {
 			return
 		}
 		r := &w.redis[index]
 		live[r.Metadata.UID] = true
+		named[objectKey(r.Metadata)] = true
 		subject := "redis " + objectKey(r.Metadata)
 		if err := c.reconcile(ctx, r, w); err != nil {
 			if ctx.Err() != nil {
@@ -367,10 +371,15 @@ func (c *controller) pass(ctx context.Context) {
 		return
 	}
 	c.reconcileBackups(ctx, w)
-	for uid := range c.states {
-		if !live[uid] {
-			delete(c.states, uid)
+	for uid, st := range c.states {
+		if live[uid] {
+			continue
 		}
+		// A Redis made again under the same name keeps its series.
+		if !named[st.namespace+"/"+st.name] {
+			c.readings.replicaLag.DeleteLabelValues(st.namespace, st.name)
+		}
+		delete(c.states, uid)
 	}
 	c.forgetPollers(live)
 }
@@ -378,7 +387,7 @@ func (c *controller) pass(ctx context.Context) {
 func (c *controller) state(r *Redis) *redisState {
 	st, ok := c.states[r.Metadata.UID]
 	if !ok {
-		st = &redisState{applied: map[string]string{}}
+		st = &redisState{namespace: r.Metadata.Namespace, name: r.Metadata.Name, applied: map[string]string{}}
 		c.states[r.Metadata.UID] = st
 	}
 	return st

@@ -61,6 +61,35 @@ func TestANewRedisNamingASourceReplicatesAndReportsItsLag(t *testing.T) {
 	mustMatch(t, slices.Contains(scrape(t, h.c.readings), fmt.Sprintf(`redis_operator_replica_lag_bytes{namespace=%q,redis="cache"} %d`, testNamespace, replica.Lag)), true)
 }
 
+// lagSeries lists the replica lag series the operator exports.
+func lagSeries(t *testing.T, m *metrics) []string {
+	t.Helper()
+	var series []string
+	for _, sample := range scrape(t, m) {
+		if strings.HasPrefix(sample, "redis_operator_replica_lag_bytes{") {
+			series = append(series, sample)
+		}
+	}
+	return series
+}
+
+// A Redis that is deleted while it replicates exports no lag after it.
+func TestADeletedRedisExportsNoLag(t *testing.T) {
+	t.Parallel()
+	source := startSource(t, "redis")
+	host, port := sourceHostPort(source)
+	h := startHarness(t, 2)
+	h.replicaOf(host, port, true)
+	h.pass()
+	h.adoptingHolder(host, 0)
+	h.pass()
+
+	h.api.delete(redisResource, testNamespace, h.name)
+	h.pass()
+
+	mustMatch(t, len(lagSeries(t, h.c.readings)), 0)
+}
+
 func TestPromotionPausesTheSourceAndWaitsForTheHolder(t *testing.T) {
 	t.Parallel()
 	source := startSource(t, "redis")
