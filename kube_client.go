@@ -113,6 +113,9 @@ type kubeClient struct {
 	// retryUnit is one second of a 429's Retry-After. It is a field so a
 	// test waits milliseconds.
 	retryUnit time.Duration
+	// observe, when set, counts each request by its verb, its resource,
+	// and its answer's code (kube_requests.go).
+	observe func(verb, resource, code string)
 }
 
 // newKubeClient builds a client from its parts. inClusterKubeClient
@@ -176,7 +179,12 @@ func (c *kubeClient) send(ctx context.Context, method, path, contentType string,
 	if body != nil {
 		req.Header.Set("Content-Type", contentType)
 	}
-	return c.http.Do(req)
+	resp, err := c.http.Do(req)
+	if c.observe != nil {
+		resource, _ := requestResource(path)
+		c.observe(requestVerb(method, path, req.URL.Query().Get("watch") == "true"), resource, requestCode(resp, err))
+	}
+	return resp, err
 }
 
 // request makes one request and decodes the answer into out. A 429
@@ -257,9 +265,23 @@ func (c *kubeClient) get(ctx context.Context, resource kubeResource, namespace, 
 // labels match it, and an empty one lists them all. The list's
 // resourceVersion is where a watch resumes.
 func (c *kubeClient) list(ctx context.Context, resource kubeResource, namespace, selector string, out any) error {
+	return c.listSelected(ctx, resource, namespace, selector, "", out)
+}
+
+// listSelected is list with a field selector too, such as
+// "metadata.name=gear", which RBAC matches against a rule's
+// resourceNames.
+func (c *kubeClient) listSelected(ctx context.Context, resource kubeResource, namespace, selector, fields string, out any) error {
 	path := resource.path(namespace, "")
+	query := url.Values{}
 	if selector != "" {
-		path += "?" + url.Values{"labelSelector": {selector}}.Encode()
+		query.Set("labelSelector", selector)
+	}
+	if fields != "" {
+		query.Set("fieldSelector", fields)
+	}
+	if len(query) > 0 {
+		path += "?" + query.Encode()
 	}
 	return c.request(ctx, http.MethodGet, path, "", nil, out)
 }
@@ -269,6 +291,11 @@ func (c *kubeClient) list(ctx context.Context, resource kubeResource, namespace,
 // owns the response body. Bookmarks keep the resume point current
 // while nothing changes.
 func (c *kubeClient) watch(ctx context.Context, resource kubeResource, namespace, selector, resourceVersion string) (*http.Response, error) {
+	return c.watchSelected(ctx, resource, namespace, selector, "", resourceVersion)
+}
+
+// watchSelected is watch with a field selector too.
+func (c *kubeClient) watchSelected(ctx context.Context, resource kubeResource, namespace, selector, fields, resourceVersion string) (*http.Response, error) {
 	query := url.Values{
 		"watch":               {"true"},
 		"allowWatchBookmarks": {"true"},
@@ -276,6 +303,9 @@ func (c *kubeClient) watch(ctx context.Context, resource kubeResource, namespace
 	}
 	if selector != "" {
 		query.Set("labelSelector", selector)
+	}
+	if fields != "" {
+		query.Set("fieldSelector", fields)
 	}
 	return c.send(ctx, http.MethodGet, resource.path(namespace, "")+"?"+query.Encode(), "", nil)
 }

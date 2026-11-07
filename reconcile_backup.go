@@ -166,6 +166,7 @@ func (c *controller) startBackup(ctx context.Context, backup Backup, r Redis, po
 		},
 	}, nil)
 	if err == nil {
+		c.readings.wroteStatus(backupsResource)
 		c.events.normal(referenceTo(backupKind, backup.Metadata), "Started", fmt.Sprintf("%s takes the snapshot, to %s", instance, key))
 	}
 	return err
@@ -194,6 +195,7 @@ func (c *controller) failBackup(ctx context.Context, backup Backup, reason strin
 		"status": map[string]any{"phase": backupFailed, "error": reason, "completedAt": c.now().UTC().Format(time.RFC3339)},
 	}, nil)
 	if err == nil {
+		c.readings.wroteStatus(backupsResource)
 		// The pass that reads this phase back posts nothing more.
 		c.backupPhases[backup.Metadata.UID] = backupFailed
 		c.events.warning(referenceTo(backupKind, backup.Metadata), "Failed", reason)
@@ -268,9 +270,13 @@ func (c *controller) reconcileSchedule(ctx context.Context, scheduled ScheduledB
 	}
 	c.log.printf("scheduledbackup %s: created backup %s", objectKey(scheduled.Metadata), name)
 	c.events.normal(referenceTo(scheduledBackupKind, scheduled.Metadata), "BackupCreated", fmt.Sprintf("created the Backup %s on the schedule", name))
-	return c.client.mergePatchStatus(ctx, scheduledBackupsResource, scheduled.Metadata.Namespace, scheduled.Metadata.Name, map[string]any{
+	err = c.client.mergePatchStatus(ctx, scheduledBackupsResource, scheduled.Metadata.Namespace, scheduled.Metadata.Name, map[string]any{
 		"status": ScheduledBackupStatus{LastScheduleTime: c.now().UTC().Format(time.RFC3339), LastBackup: name},
 	}, nil)
+	if err == nil {
+		c.readings.wroteStatus(scheduledBackupsResource)
+	}
+	return err
 }
 
 // applyRetention deletes each completed Backup of r older than its

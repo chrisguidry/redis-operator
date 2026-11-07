@@ -30,6 +30,10 @@ type managerHarness struct {
 	// runs next, or empty for an instance without TLS.
 	tlsSecret string
 	tlsPort   int
+	// leaseReadPeriod and slowReadPeriod are the read periods of each
+	// instance that start runs next. Zero reads on every step.
+	leaseReadPeriod time.Duration
+	slowReadPeriod  time.Duration
 }
 
 type runningManager struct {
@@ -142,7 +146,7 @@ func (h *managerHarness) publishInstances() {
 	var instances []any
 	for i := range len(h.instances) {
 		report := h.report(instanceName(h.name, i))
-		entry := map[string]any{"name": report.Name, "role": report.Role, "ready": report.Ready, "offset": report.Offset}
+		entry := map[string]any{"name": report.Name, "role": report.Role, "ready": report.Ready}
 		if report.MinReplicasToWrite != nil {
 			entry["minReplicasToWrite"] = *report.MinReplicasToWrite
 		}
@@ -169,6 +173,7 @@ func (h *managerHarness) start(name, dir string) {
 		tlsSecret: h.tlsSecret, tlsDir: filepath.Join(dir, "tls"), tlsPort: h.tlsPort,
 		leaseDuration: 1500 * time.Millisecond, renewDeadline: time.Second,
 		retryPeriod: 200 * time.Millisecond, stepPeriod: 100 * time.Millisecond,
+		leaseReadPeriod: h.leaseReadPeriod, slowReadPeriod: h.slowReadPeriod,
 		failoverTimeout: 3 * time.Second, handoverWait: 3 * time.Second,
 		demotionHold: 5 * time.Second, routeSettle: 500 * time.Millisecond, pauseGap: time.Second,
 		clock: clock.now,

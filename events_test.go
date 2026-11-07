@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strconv"
@@ -245,4 +246,42 @@ func TestCutTextShortensAtACharacterBoundary(t *testing.T) {
 	for _, tc := range cases {
 		mustMatch(t, cutText(tc.text, tc.limit), tc.want)
 	}
+}
+
+// At shutdown the recorder sends each Event it still holds, so the
+// last decisions of a term reach the API server.
+func TestRecorderSendsWhatItHoldsAtShutdown(t *testing.T) {
+	t.Parallel()
+	api := startFakeKube(t)
+	r := newEventRecorder(api.client, time.Now, newLineLog(&syncBuffer{}))
+	r.warning(testEventObject, "FailoverStarted", "failing over from cache-0")
+	r.normal(testEventObject, "PrimaryChosen", "cache-1 is the next primary")
+
+	r.flush(time.Second)
+
+	api.waitForEvent(redisKind, "cache", "FailoverStarted")
+	api.waitForEvent(redisKind, "cache", "PrimaryChosen")
+}
+
+// An Event whose write failed and waits for its next attempt when the
+// recorder stops is sent at shutdown, not dropped.
+func TestRecorderSendsAtShutdownAWriteThatWaitedToRetry(t *testing.T) {
+	t.Parallel()
+	api := startFakeKube(t)
+	api.refuseNext("POST", eventsResource.path(testNamespace, ""), 500, 1)
+	r := newEventRecorder(api.client, time.Now, newLineLog(&syncBuffer{}))
+	ctx, stop := context.WithCancel(t.Context())
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		r.run(ctx, time.Hour, time.Second)
+	}()
+	r.warning(testEventObject, "FailoverStarted", "failing over from cache-0")
+	eventually(t, "the refused write", func() bool { return api.requestCount("POST", eventsResource.path(testNamespace, ""), false) == 1 })
+
+	stop()
+	<-stopped
+	r.flush(time.Second)
+
+	api.waitForEvent(redisKind, "cache", "FailoverStarted")
 }

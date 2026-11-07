@@ -106,10 +106,9 @@ type RedisStatus struct {
 }
 
 type InstanceStatus struct {
-	Name   string `json:"name"`
-	Role   string `json:"role"`
-	Ready  bool   `json:"ready"`
-	Offset int64  `json:"offset"`
+	Name  string `json:"name"`
+	Role  string `json:"role"`
+	Ready bool   `json:"ready"`
 	// MinReplicasToWrite is the min-replicas-to-write the primary's
 	// server runs with, from its report. It can trail
 	// status.minReplicasToWrite by a step of the primary's manager.

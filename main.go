@@ -95,6 +95,7 @@ func runOperator(ctx context.Context, getenv func(string) string, log io.Writer)
 		return err
 	}
 	readings := newMetrics(version)
+	client.observe = readings.observeRequest
 	address, err := readings.serve(ctx, fmt.Sprintf(":%d", metricsPort))
 	if err != nil {
 		return fmt.Errorf("serving metrics: %w", err)
@@ -150,31 +151,34 @@ func ownImage(ctx context.Context, client *kubeClient, namespace, name string) (
 
 func runManager(ctx context.Context, getenv func(string) string, log io.Writer) error {
 	config := managerConfig{
-		namespace:       getenv("POD_NAMESPACE"),
-		redisName:       getenv("REDIS_NAME"),
-		podName:         getenv("POD_NAME"),
-		podIP:           getenv("POD_IP"),
-		password:        getenv("REDIS_PASSWORD"),
-		tlsSecret:       getenv("TLS_SECRET"),
-		tlsDir:          filepath.Join("/manager", "tls"),
-		tlsPort:         tlsPort,
-		port:            serverPort,
-		statusPort:      statusPort,
-		loopback:        true,
-		dataDir:         "/data",
-		configPath:      filepath.Join("/manager", "server.conf"),
-		backupDir:       backupMount,
-		restoreDir:      restoreMount,
-		leaseDuration:   primaryLeaseDuration,
-		renewDeadline:   primaryRenewDeadline,
-		retryPeriod:     primaryRetryPeriod,
-		stepPeriod:      managerStepPeriod,
-		failoverTimeout: switchoverTimeout,
-		handoverWait:    handoverWait,
-		demotionHold:    demotionHold,
-		routeSettle:     routeSettle,
-		pauseGap:        pauseGap,
-		fullSyncDelay:   fullSyncDelay,
+		namespace:          getenv("POD_NAMESPACE"),
+		redisName:          getenv("REDIS_NAME"),
+		podName:            getenv("POD_NAME"),
+		podIP:              getenv("POD_IP"),
+		password:           getenv("REDIS_PASSWORD"),
+		tlsSecret:          getenv("TLS_SECRET"),
+		tlsDir:             filepath.Join("/manager", "tls"),
+		tlsPort:            tlsPort,
+		port:               serverPort,
+		statusPort:         statusPort,
+		loopback:           true,
+		dataDir:            "/data",
+		configPath:         filepath.Join("/manager", "server.conf"),
+		backupDir:          backupMount,
+		restoreDir:         restoreMount,
+		leaseDuration:      primaryLeaseDuration,
+		renewDeadline:      primaryRenewDeadline,
+		retryPeriod:        primaryRetryPeriod,
+		stepPeriod:         managerStepPeriod,
+		leaseReadPeriod:    managerLeaseReadPeriod,
+		slowReadPeriod:     managerSlowReadPeriod,
+		minReplicasRecheck: minReplicasRecheck,
+		failoverTimeout:    switchoverTimeout,
+		handoverWait:       handoverWait,
+		demotionHold:       demotionHold,
+		routeSettle:        routeSettle,
+		pauseGap:           pauseGap,
+		fullSyncDelay:      fullSyncDelay,
 	}
 	for name, value := range map[string]string{
 		"POD_NAMESPACE": config.namespace, "REDIS_NAME": config.redisName, "POD_NAME": config.podName,
@@ -188,5 +192,7 @@ func runManager(ctx context.Context, getenv func(string) string, log io.Writer) 
 	if err != nil {
 		return err
 	}
-	return newManager(config, client, log).run(ctx)
+	m := newManager(config, client, log)
+	client.observe = m.readings.observeRequest
+	return m.run(ctx)
 }

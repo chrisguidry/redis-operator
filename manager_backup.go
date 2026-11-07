@@ -87,6 +87,9 @@ func (m *manager) startBackups(ctx context.Context) {
 		m.deleteVolumeBackups(ctx, list.Items)
 	}
 	for _, backup := range list.Items {
+		if _, done := m.completedBackups.Load(backup.Metadata.UID); done {
+			continue
+		}
 		if backup.Spec.Redis != m.config.redisName || backup.Status.Phase != backupRunning ||
 			backup.Status.Instance != m.config.podName || backup.Status.Store == nil || backup.Metadata.DeletionTimestamp != "" {
 			continue
@@ -113,6 +116,7 @@ func (m *manager) runBackup(backup Backup) {
 		m.say(fmt.Sprintf("%s: backup %s failed: %s", m.config.podName, backup.Metadata.Name, errorText(err)))
 	} else {
 		status["phase"], status["size"], status["offset"] = backupCompleted, size, offset
+		m.completedBackups.Store(backup.Metadata.UID, true)
 		m.say(fmt.Sprintf("%s: backup %s completed, %d bytes at offset %d", m.config.podName, backup.Metadata.Name, size, offset))
 	}
 	if err := m.client.mergePatchStatus(ctx, backupsResource, m.config.namespace, backup.Metadata.Name, map[string]any{"status": status}, nil); err != nil {

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -57,6 +58,36 @@ func TestANewRedisNamingASourceReplicatesAndReportsItsLag(t *testing.T) {
 	replica := h.redis().Status.Replica
 	mustMatch(t, replica.Source, fmt.Sprintf("%s:%d", host, port))
 	mustMatch(t, replica.Lag, replica.SourceOffset)
+	mustMatch(t, slices.Contains(scrape(t, h.c.readings), fmt.Sprintf(`redis_operator_replica_lag_bytes{namespace=%q,redis="cache"} %d`, testNamespace, replica.Lag)), true)
+}
+
+// lagSeries lists the replica lag series the operator exports.
+func lagSeries(t *testing.T, m *metrics) []string {
+	t.Helper()
+	var series []string
+	for _, sample := range scrape(t, m) {
+		if strings.HasPrefix(sample, "redis_operator_replica_lag_bytes{") {
+			series = append(series, sample)
+		}
+	}
+	return series
+}
+
+// A Redis that is deleted while it replicates exports no lag after it.
+func TestADeletedRedisExportsNoLag(t *testing.T) {
+	t.Parallel()
+	source := startSource(t, "redis")
+	host, port := sourceHostPort(source)
+	h := startHarness(t, 2)
+	h.replicaOf(host, port, true)
+	h.pass()
+	h.adoptingHolder(host, 0)
+	h.pass()
+
+	h.api.delete(redisResource, testNamespace, h.name)
+	h.pass()
+
+	mustMatch(t, len(lagSeries(t, h.c.readings)), 0)
 }
 
 func TestPromotionPausesTheSourceAndWaitsForTheHolder(t *testing.T) {
@@ -366,4 +397,33 @@ func TestAReplicatingRedisWhoseInstancesRestartEmptyCopiesTheSourceAgain(t *test
 	mustMatch(t, status.Replica.Phase, replicaReplicating)
 	_, lost := findCondition(status.Conditions, "DataLost")
 	mustMatch(t, lost, false)
+}
+
+// The lag moves with every write to the source, so the status records
+// it only when it crosses a bucket, or when it holds none yet.
+func TestTheLagIsRecordedOnlyWhenItCrossesABucket(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		held     ReplicaStatus
+		offset   int64
+		lag      int64
+		recorded ReplicaStatus
+	}{
+		{"the first measure", ReplicaStatus{}, 100, 0, ReplicaStatus{SourceOffset: 100}},
+		{"a lag that stays caught up", ReplicaStatus{SourceOffset: 100}, 900, 0, ReplicaStatus{SourceOffset: 100}},
+		{"a lag that stays near", ReplicaStatus{SourceOffset: 100, Lag: 10}, 900, 800, ReplicaStatus{SourceOffset: 100, Lag: 10}},
+		{"a lag that falls behind", ReplicaStatus{SourceOffset: 100, Lag: 10}, 9 << 20, 8 << 20, ReplicaStatus{SourceOffset: 9 << 20, Lag: 8 << 20}},
+		{"a lag that catches up", ReplicaStatus{SourceOffset: 100, Lag: 10}, 900, 0, ReplicaStatus{SourceOffset: 900}},
+	}
+	for _, one := range cases {
+		t.Run(one.name, func(t *testing.T) {
+			t.Parallel()
+			replica := one.held
+
+			recordLag(&replica, one.offset, one.lag)
+
+			mustMatch(t, replica, one.recorded)
+		})
+	}
 }

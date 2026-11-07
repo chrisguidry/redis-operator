@@ -113,8 +113,10 @@ type eventRecorder struct {
 	queue    chan kubeEvent
 	dropped  atomic.Uint64
 	// series is read and written only by the goroutine that writes the
-	// queue.
+	// queue, and after it stops, by flush. held is the Event whose write
+	// waited for its next attempt when run stopped.
 	series *eventSeries
+	held   []kubeEvent
 }
 
 func newEventRecorder(client *kubeClient, now func() time.Time, log *lineLog) *eventRecorder {
@@ -164,37 +166,73 @@ func (r *eventRecorder) post(object objectReference, kind, reason, message strin
 }
 
 // run writes the queue until ctx ends. retryWait is the time between
-// two sends of one write, and timeout bounds each request.
+// two sends of one write, and timeout bounds each request. A request in
+// flight when ctx ends runs to its answer, and an Event that waits for
+// its next attempt is held for flush.
 func (r *eventRecorder) run(ctx context.Context, retryWait, timeout time.Duration) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case event := <-r.queue:
-			r.write(ctx, event, retryWait, timeout)
+			if !r.write(ctx, event, retryWait, timeout) {
+				r.held = append(r.held, event)
+				return
+			}
 		}
 	}
 }
 
 // write sends one Event, and sends it again after a failure, up to
 // eventAttempts times. An API server that restarts refuses
-// connections for some seconds, which the retries cover.
-func (r *eventRecorder) write(ctx context.Context, event kubeEvent, retryWait, timeout time.Duration) {
+// connections for some seconds, which the retries cover. It reports
+// false when ctx ended while the Event waited for its next attempt.
+func (r *eventRecorder) write(ctx context.Context, event kubeEvent, retryWait, timeout time.Duration) bool {
 	for attempt := 1; ; attempt++ {
-		err := r.writeOnce(ctx, event, timeout)
+		err := r.writeOnce(context.WithoutCancel(ctx), event, timeout)
 		if err == nil || leavingNamespace(err) {
 			r.log.clear("events", topicReconcile)
-			return
+			return true
 		}
 		if attempt == eventAttempts {
 			r.log.fault("events", topicReconcile, fmt.Sprintf("writing the %s Event %s on %s %s/%s: %s",
 				event.Type, event.Reason, event.InvolvedObject.Kind, event.InvolvedObject.Namespace, event.InvolvedObject.Name, errorText(err)))
-			return
+			return true
 		}
 		select {
 		case <-ctx.Done():
-			return
+			return false
 		case <-time.After(retryWait):
+		}
+	}
+}
+
+// flush sends, once each, the Event that run held and every Event still
+// queued, within timeout in all. It runs after run has returned and
+// every pass has stopped, so the last decisions of a term reach the API
+// server before the leader steps down.
+func (r *eventRecorder) flush(timeout time.Duration) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	pending := r.held
+	r.held = nil
+	for {
+		select {
+		case event := <-r.queue:
+			pending = append(pending, event)
+			continue
+		default:
+		}
+		break
+	}
+	for index, event := range pending {
+		if ctx.Err() != nil {
+			r.log.printf("events: gave up %d Events at shutdown", len(pending)-index)
+			return
+		}
+		if err := r.writeOnce(ctx, event, timeout); err != nil && !leavingNamespace(err) {
+			r.log.printf("events: writing the %s Event %s on %s %s/%s at shutdown: %s",
+				event.Type, event.Reason, event.InvolvedObject.Kind, event.InvolvedObject.Namespace, event.InvolvedObject.Name, errorText(err))
 		}
 	}
 }

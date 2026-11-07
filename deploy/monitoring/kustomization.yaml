@@ -34,7 +34,7 @@
 # The instance PodMonitor reads pods in every namespace. A Prometheus
 # that ignores namespace selectors (ignoreNamespaceSelectors) reads only
 # the PodMonitor's own namespace, and a NetworkPolicy in a Redis's
-# namespace must admit Prometheus to the port named metrics.
+# namespace must admit Prometheus to the ports named metrics and status.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 

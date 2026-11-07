@@ -22,7 +22,11 @@ package main
 // of one Job, which the new leader can send again before the old one's
 // status write lands.
 //
-// The defaults are client-go's, from k8s.io/client-go/tools/leaderelection.
+// The duration and the renew deadline are client-go's defaults, from
+// k8s.io/client-go/tools/leaderelection. The retry period is longer
+// than client-go's, because every try is a request to the API server,
+// and the deadline still holds several tries. It costs a standby that
+// much longer to notice a Lease its leader released.
 
 import (
 	"context"
@@ -39,7 +43,7 @@ const (
 	leaseName           = "redis-operator"
 	leaseDuration       = 15 * time.Second
 	leaseRenewDeadline  = 10 * time.Second
-	leaseRetryPeriod    = 2 * time.Second
+	leaseRetryPeriod    = 3 * time.Second
 	leaseReleaseTimeout = 5 * time.Second
 	// microTime is the format of a Lease's acquireTime and renewTime.
 	microTime = "2006-01-02T15:04:05.000000Z07:00"

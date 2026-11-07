@@ -344,3 +344,36 @@ func (s *server) shutdown(ctx context.Context, persistent bool) {
 	_, _ = s.do(ctx, "SHUTDOWN", mode)
 	s.close()
 }
+
+// appliedMinReplicas is the min-replicas-to-write the server runs. The
+// manager remembers what it last read or set, because the primary
+// reports the value on every step and a CONFIG GET on every step is a
+// command for each. It reads the value back once a recheck period, so
+// a change made by hand reaches the report and is put right.
+func (m *manager) appliedMinReplicas(ctx context.Context) (int, error) {
+	if m.minApplied != nil && !due(m.now(), m.minCheckedAt, m.config.minReplicasRecheck) {
+		return *m.minApplied, nil
+	}
+	applied, err := m.server.minReplicasToWrite(ctx)
+	if err != nil {
+		m.minApplied = nil
+		return 0, err
+	}
+	m.minApplied, m.minCheckedAt = &applied, m.now()
+	return applied, nil
+}
+
+// ensureMinReplicas makes the server run want, and sends CONFIG SET only
+// when it runs another value. The remembered value changes only after a
+// CONFIG SET succeeds.
+func (m *manager) ensureMinReplicas(ctx context.Context, want int) error {
+	if applied, err := m.appliedMinReplicas(ctx); err == nil && applied == want {
+		return nil
+	}
+	if err := m.server.setMinReplicasToWrite(ctx, want); err != nil {
+		m.minApplied = nil
+		return err
+	}
+	m.minApplied = &want
+	return nil
+}

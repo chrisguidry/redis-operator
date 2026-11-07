@@ -30,13 +30,11 @@ spec:
       serviceAccountName: redis-operator
       affinity:
         podAntiAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              podAffinityTerm:
-                topologyKey: kubernetes.io/hostname
-                labelSelector:
-                  matchLabels:
-                    app: redis-operator
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app: redis-operator
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -70,6 +68,11 @@ spec:
           ports:
             - name: metrics
               containerPort: 9200
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: 10
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -81,3 +84,15 @@ spec:
               memory: 32Mi
             limits:
               memory: 128Mi
+---
+# The budget lets a drain take one replica at a time, so a node's drain
+# never stops both, and the standby is ready to lead.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: redis-operator
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: redis-operator

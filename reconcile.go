@@ -1,11 +1,13 @@
 package main
 
-// The operator's loop is level-triggered. A watch event or the backstop
-// ticker wakes it, and each pass reads every Redis and the pods, Leases,
-// StatefulSets, and Nodes it watches from the watches' stores, polls
-// each instance manager's /status, and reconciles each Redis. A
-// restarted operator lists everything again, and starts correct: the
-// decision it acts on is in each Redis's status, not in its memory.
+// The operator's loop is level-triggered. A watch event, a poll that
+// changed what a decision reads, or the backstop ticker wakes it, and
+// each pass reads every Redis and the pods, Leases, StatefulSets, and
+// Nodes it watches from the watches' stores, reads the latest poll of
+// each Redis's instance managers (reconcile_poll.go), and reconciles
+// each Redis. A restarted operator lists everything again, and starts
+// correct: the decision it acts on is in each Redis's status, not in
+// its memory.
 //
 // The memory holds only what time measures: when each instance manager
 // last answered, since when it has missed the polls that other managers
@@ -41,19 +43,38 @@ var selectors = map[kubeResource]string{
 var trims = map[kubeResource]func(json.RawMessage) (json.RawMessage, error){
 	redisResource:            trimTo[Redis],
 	podsResource:             trimTo[Pod],
-	leasesWatched:            trimTo[Lease],
+	leasesWatched:            trimTo[leaseHolder],
 	statefulSetsResource:     trimTo[StatefulSet],
 	nodesResource:            trimTo[Node],
 	backupsResource:          trimTo[Backup],
 	scheduledBackupsResource: trimTo[ScheduledBackup],
 }
 
+// leaseHolder is the part of a primary Lease that a pass reads: its
+// key and its holder. A renewal moves the renew time, and can move the
+// generation, so its event leaves the trimmed copy as it was and wakes
+// no pass.
+type leaseHolder struct {
+	Metadata struct {
+		Name            string `json:"name"`
+		Namespace       string `json:"namespace"`
+		ResourceVersion string `json:"resourceVersion"`
+	} `json:"metadata"`
+	Spec struct {
+		HolderIdentity string `json:"holderIdentity,omitempty"`
+	} `json:"spec"`
+}
+
 // The operator's timings. They are fields of the controller so a test
 // can shorten them.
 type timings struct {
-	// backstop is how often a pass runs with nothing to prompt it. It is
-	// also how often the instance managers are polled.
-	backstop time.Duration
+	// backstop is how often a pass runs with nothing to prompt it. It
+	// covers the decisions that time moves and no event announces: a
+	// pending failover's wait for its replicas, a switchover's deadline,
+	// a canary's soak, and a backup's schedule. pollPeriod is how often
+	// each Redis's instance managers are polled.
+	backstop   time.Duration
+	pollPeriod time.Duration
 	// failureThreshold is how long the primary's manager may miss
 	// informative polls before a failover starts, counted from the first
 	// one it missed (reconcile_poll.go).
@@ -87,6 +108,7 @@ type timings struct {
 
 var defaultTimings = timings{
 	backstop:            2 * time.Second,
+	pollPeriod:          time.Second,
 	failureThreshold:    6 * time.Second,
 	leaderlessThreshold: primaryLeaseDuration + 6*time.Second,
 	pendingWait:         5 * time.Second,
@@ -107,28 +129,29 @@ type controller struct {
 	log        *lineLog
 	events     *eventRecorder
 	wake       chan struct{}
+	pollWake   chan struct{}
 	timings    timings
 	images     images
 	statusPort int
 	poller     *http.Client
 	watches    map[kubeResource]*collectionWatch
 
-	// states and backupPhases are read and written by the pass only.
+	// states, pollers, and backupPhases are read and written by the pass
+	// only. polling runs the pollers inside run, and is nil outside it,
+	// where each pass polls once itself.
 	states       map[string]*redisState
+	pollers      map[string]*instancePoller
+	polling      *sync.WaitGroup
 	backupPhases map[string]string
 }
 
 // redisState is what the operator remembers about one Redis.
 type redisState struct {
-	// lastSeen is when each instance manager last answered, and reports
-	// what it answered then.
-	lastSeen map[string]time.Time
-	reports  map[string]instanceReport
-	// informedAt is the time of the latest informative poll, and
-	// missedSince holds, for each instance, the first informative poll
-	// it missed since it last answered (reconcile_poll.go).
-	informedAt  time.Time
-	missedSince map[string]time.Time
+	// pollView is the poll that this Redis's latest pass decided from.
+	pollView
+	// namespace and name are the Redis's, so the operator can delete its
+	// metric series once the Redis is gone.
+	namespace, name string
 	// pendingSince is when the operator wrote targetPrimary: pending.
 	pendingSince time.Time
 	// leaderlessSince is when the Lease was last seen with no holder,
@@ -160,11 +183,13 @@ func newController(client *kubeClient, readings *metrics, imgs images, now func(
 		now:          now,
 		log:          newLineLog(log),
 		wake:         make(chan struct{}, 1),
+		pollWake:     make(chan struct{}, 1),
 		timings:      defaultTimings,
 		images:       imgs,
 		statusPort:   statusPort,
 		watches:      map[kubeResource]*collectionWatch{},
 		states:       map[string]*redisState{},
+		pollers:      map[string]*instancePoller{},
 		backupPhases: map[string]string{},
 	}
 	c.events = newEventRecorder(client, now, c.log)
@@ -187,26 +212,44 @@ func (c *controller) run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	c.readings.setSynced(true)
+	defer c.readings.setSynced(false)
 	var running sync.WaitGroup
 	defer running.Wait()
+	c.polling = &running
 	c.watch(ctx, &running, versions)
-	running.Go(func() { c.events.run(ctx, c.timings.eventRetryWait, c.timings.eventTimeout) })
+	// The recorder outlives the passes, so the Events of the last pass
+	// are sent after it, once every other writer has stopped.
+	writing, stopWriting := context.WithCancel(context.WithoutCancel(ctx))
+	var recording sync.WaitGroup
+	recording.Go(func() { c.events.run(writing, c.timings.eventRetryWait, c.timings.eventTimeout) })
+	defer func() {
+		running.Wait()
+		stopWriting()
+		recording.Wait()
+		c.events.flush(c.timings.eventTimeout)
+	}()
 
 	ticker := time.NewTicker(c.timings.backstop)
 	defer ticker.Stop()
-	for {
+	for cause := passStart; ; {
 		// select picks at random among the cases that are ready, so a
 		// wake or a tick can win over a context that already ended, and
 		// a pass on it would reach no instance manager.
 		if ctx.Err() != nil {
 			return nil
 		}
+		c.readings.passes.WithLabelValues(cause).Inc()
 		c.pass(ctx)
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-c.wake:
+			cause = passEvent
+		case <-c.pollWake:
+			cause = passPoll
 		case <-ticker.C:
+			cause = passBackstop
 		}
 	}
 }
@@ -297,19 +340,22 @@ func objectKey(meta ObjectMeta) string {
 // requests fail because the operator stopped, not because a Redis is
 // unwell, so it decides nothing and counts no error.
 func (c *controller) pass(ctx context.Context) {
+	began := time.Now()
+	defer func() { c.readings.passDuration.Observe(time.Since(began).Seconds()) }()
 	w, err := c.read()
 	if err != nil {
 		c.log.fault("reading the cluster", topicReconcile, errorText(err))
 		return
 	}
 	c.log.clear("reading the cluster", topicReconcile)
-	live := map[string]bool{}
+	live, named := map[string]bool{}, map[string]bool{}
 	for index := range w.redis {
 		if ctx.Err() != nil {
 			return
 		}
 		r := &w.redis[index]
 		live[r.Metadata.UID] = true
+		named[objectKey(r.Metadata)] = true
 		subject := "redis " + objectKey(r.Metadata)
 		if err := c.reconcile(ctx, r, w); err != nil {
 			if ctx.Err() != nil {
@@ -325,17 +371,23 @@ func (c *controller) pass(ctx context.Context) {
 		return
 	}
 	c.reconcileBackups(ctx, w)
-	for uid := range c.states {
-		if !live[uid] {
-			delete(c.states, uid)
+	for uid, st := range c.states {
+		if live[uid] {
+			continue
 		}
+		// A Redis made again under the same name keeps its series.
+		if !named[st.namespace+"/"+st.name] {
+			c.readings.replicaLag.DeleteLabelValues(st.namespace, st.name)
+		}
+		delete(c.states, uid)
 	}
+	c.forgetPollers(live)
 }
 
 func (c *controller) state(r *Redis) *redisState {
 	st, ok := c.states[r.Metadata.UID]
 	if !ok {
-		st = &redisState{lastSeen: map[string]time.Time{}, reports: map[string]instanceReport{}, missedSince: map[string]time.Time{}, applied: map[string]string{}}
+		st = &redisState{namespace: r.Metadata.Namespace, name: r.Metadata.Name, applied: map[string]string{}}
 		c.states[r.Metadata.UID] = st
 	}
 	return st

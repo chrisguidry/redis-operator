@@ -15,19 +15,57 @@ import (
 	"time"
 )
 
-// stepAsHolder runs the primary, or hands the role over.
-func (m *manager) stepAsHolder(ctx context.Context, now time.Time, apiErr error, info replicationInfo) error {
+// isolation is the outcome of an isolation check that a step ran
+// before its read of the API server.
+type isolation struct{ err error }
+
+// checkIsolationFirst runs the isolation check before the step's read
+// when the holder is past its renew deadline. A read past the deadline
+// waits up to a retry period for an API server that does not answer, so
+// a holder that checked only after it would serve that much longer while
+// the target may take the Lease. It returns nil when it ran no check.
+func (m *manager) checkIsolationFirst(ctx context.Context) *isolation {
+	if !m.lease.held() || !m.pastRenewDeadline(m.now()) {
+		return nil
+	}
+	info, err := m.server.replication(ctx)
+	if err != nil {
+		return nil
+	}
+	return &isolation{err: m.isolationCheck(ctx, info)}
+}
+
+// pastRenewDeadline reports whether the holder has gone the renew
+// deadline without a renewal. A holder that restarted holding the Lease
+// has renewed nothing yet, and a read that failed proves nothing about
+// its Lease, so until a renewal succeeds it is past the deadline.
+func (m *manager) pastRenewDeadline(now time.Time) bool {
+	return m.lastRenew.IsZero() || now.Sub(m.lastRenew) > m.config.renewDeadline
+}
+
+// stepAsHolder runs the primary, or hands the role over. api bounds
+// every API request by the renew deadline (manager_reads.go). checked
+// is the isolation check the step ran before its read, or nil.
+func (m *manager) stepAsHolder(ctx, api context.Context, apiErr error, info replicationInfo, checked *isolation) error {
+	// The clock is read after the step's read of the decision, so a slow
+	// read never counts as time the Lease was renewed.
+	now := m.now()
 	if apiErr == nil && now.Sub(m.lastRenew) >= m.config.retryPeriod {
-		if err := m.lease.renew(ctx, now); err == nil {
+		if err := m.lease.renew(api, now); err == nil {
 			m.lastRenew = now
 		} else {
 			apiErr = err
+			m.rereadLeaseAfter(api, now, err)
+			if !m.lease.held() {
+				return err
+			}
 		}
+		now = m.now()
 	}
-	if m.lastRenew.IsZero() {
-		m.lastRenew = now
-	}
-	if now.Sub(m.lastRenew) > m.config.renewDeadline {
+	if m.pastRenewDeadline(now) {
+		if checked != nil {
+			return checked.err
+		}
 		return m.isolationCheck(ctx, info)
 	}
 	if apiErr != nil {
@@ -37,7 +75,7 @@ func (m *manager) stepAsHolder(ctx context.Context, now time.Time, apiErr error,
 	}
 	if m.stopping && m.target == m.config.podName && !m.askedHandover {
 		m.askedHandover = true
-		if err := m.askForHandover(ctx); err != nil {
+		if err := m.askForHandover(api); err != nil {
 			return err
 		}
 	}
@@ -56,10 +94,10 @@ func (m *manager) stepAsHolder(ctx context.Context, now time.Time, apiErr error,
 			return err
 		}
 		m.line(m.config.podName + ": primary")
-		return m.server.setMinReplicasToWrite(ctx, m.minReplicas)
+		return m.ensureMinReplicas(ctx, m.minReplicas)
 	case targetPending, "":
 		m.line(m.config.podName + ": stepping down, a failover is pending")
-		return m.stepDownForFailover(ctx, now, info)
+		return m.stepDownForFailover(ctx, api, now, info)
 	default:
 		if !m.switchingOver && !m.replicaMode {
 			// A failover named the next primary while this instance, which
@@ -67,32 +105,32 @@ func (m *manager) stepAsHolder(ctx context.Context, now time.Time, apiErr error,
 			// detached for the failover, and may not reach it at all, so a
 			// FAILOVER to the next primary could never finish.
 			m.line(fmt.Sprintf("%s: stepping down, a failover named %s", m.config.podName, m.target))
-			return m.stepDownForFailover(ctx, now, info)
+			return m.stepDownForFailover(ctx, api, now, info)
 		}
-		return m.handOver(ctx, now, info)
+		return m.handOver(ctx, api, now, info)
 	}
 }
 
 // stepDownForFailover detaches the server once routing has moved off
 // this pod, then releases the Lease.
-func (m *manager) stepDownForFailover(ctx context.Context, now time.Time, info replicationInfo) error {
+func (m *manager) stepDownForFailover(ctx, api context.Context, now time.Time, info replicationInfo) error {
 	detached, err := m.stepDown(ctx, now, info, func() error { return m.server.detach(ctx, info, m.config.port) })
 	if !detached {
 		return err
 	}
-	return m.lease.release(ctx, now)
+	return m.lease.release(api, now)
 }
 
 // handOver moves the primary role to the target with FAILOVER, once
 // routing has moved off this pod, then releases the Lease. An aborted
 // FAILOVER leaves this instance primary, and the operator gives the
 // switchover up.
-func (m *manager) handOver(ctx context.Context, now time.Time, info replicationInfo) error {
+func (m *manager) handOver(ctx, api context.Context, now time.Time, info replicationInfo) error {
 	if m.replicaMode {
 		// The holder is a replica of the source, so there is no primary
 		// role to hand over: the next holder follows the source itself.
 		m.say(fmt.Sprintf("%s: giving the lease to %s, which follows the source in its place", m.config.podName, m.target))
-		return m.lease.release(ctx, now)
+		return m.lease.release(api, now)
 	}
 	ip := m.podIPs[m.target]
 	if ip == "" {
@@ -112,7 +150,7 @@ func (m *manager) handOver(ctx context.Context, now time.Time, info replicationI
 	if !handed {
 		return nil
 	}
-	return m.lease.release(ctx, m.now())
+	return m.lease.release(api, m.now())
 }
 
 // askForHandover marks this pod, so the operator switches over before
@@ -136,18 +174,32 @@ func (m *manager) isolationCheck(ctx context.Context, info replicationInfo) erro
 }
 
 // peersAgree asks every other instance's manager which instance it
-// takes for the target.
+// takes for the target. It agrees only when it asked one peer for each
+// other instance the Redis has, so a list of pods that lacks one, as an
+// old list can, never agrees for it. It asks them all at once under one
+// peer timeout, so a fence waits for the slowest peer and not for the
+// sum of them.
 func (m *manager) peersAgree(ctx context.Context) bool {
+	ctx, cancel := context.WithTimeout(ctx, peerTimeout)
+	defer cancel()
+	answers := make(chan bool, len(m.podIPs))
+	asked := 0
 	for name, ip := range m.podIPs {
 		if name == m.config.podName {
 			continue
 		}
-		report, err := m.readPeer(ctx, ip)
-		if err != nil || report.Target != m.config.podName {
+		asked++
+		go func() {
+			report, err := m.readPeer(ctx, ip)
+			answers <- err == nil && report.Target == m.config.podName
+		}()
+	}
+	for range asked {
+		if !<-answers {
 			return false
 		}
 	}
-	return true
+	return asked >= m.instances-1
 }
 
 func (m *manager) readPeer(ctx context.Context, ip string) (instanceReport, error) {
@@ -179,7 +231,7 @@ func (m *manager) stepAsOther(ctx context.Context, now time.Time, info replicati
 		if err := m.server.promote(ctx, info); err != nil {
 			return err
 		}
-		return m.server.setMinReplicasToWrite(ctx, m.minReplicas)
+		return m.ensureMinReplicas(ctx, m.minReplicas)
 	case m.target == m.config.podName && info.role == "master":
 		// FAILOVER made this server the primary, and the old holder has
 		// not released the Lease yet.

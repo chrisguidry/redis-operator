@@ -239,10 +239,12 @@ cannot be `default`.
 
 Every instance manager sets the users on its own server, replicas
 included, so a failover keeps them. A change to `users` or to a
-password's Secret takes effect within about a second, with no restart
-and no roll. Connections that already authenticated keep their
+password's Secret takes effect within about 10 seconds, with no restart
+and no roll: each instance manager reads the users and their Secrets
+every 10 seconds. Connections that already authenticated keep their
 session; new ones need the new password. Removing a user deletes it
-from every server. A user made by hand with `ACL SETUSER` is left
+from every server within the same 10 seconds, and until then the old
+user can still log in. A user made by hand with `ACL SETUSER` is left
 alone.
 
 A user whose Secret or key is missing, whose password is empty, or
@@ -301,8 +303,8 @@ servers ask for no client certificate.
 
 Replicas follow the primary over TLS, and verify its certificate
 against `ca.crt`. A new certificate in the Secret, such as
-cert-manager's renewal, loads into every server within about a second,
-with no restart; open connections keep the certificate they started
+cert-manager's renewal, loads into every server within about 10
+seconds, with no restart; open connections keep the certificate they started
 with.
 
 A client needs the CA that signed the certificate. With a CA issuer,
@@ -358,7 +360,8 @@ In the status:
   be primary, or `pending` while a failover chooses one.
 - `currentPrimary` is the instance that holds the Lease.
 - `instances` lists each pod with its `role` (`primary`, `replica`,
-  `detached`, or `starting`), `ready`, and replication `offset`.
+  `detached`, or `starting`) and `ready`. The replication offsets are
+  redis_exporter's series, such as `redis_master_repl_offset`.
 - `switchover` is set while a planned switchover runs, with `from`,
   `to`, `reason`, and `startedAt`.
 

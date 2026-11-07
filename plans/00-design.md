@@ -98,7 +98,10 @@ The design instead:
    unreachable address, which makes its Redis a read-only replica that
    keeps its data, and it closes its client connections. If every peer
    agrees with it, it keeps serving, so an API server outage alone stops
-   no healthy primary.
+   no healthy primary. Past the deadline it asks before each read of the
+   API server, and it asks every peer at once under one peer timeout, so
+   its writes stop within a peer timeout of the deadline, before the
+   target can take the Lease.
 4. **Redis fences itself too.** With replicas, every instance runs with
    `min-replicas-to-write` and `min-replicas-max-lag`, so a primary that
    loses its replicas refuses writes even if its instance manager is
@@ -184,13 +187,14 @@ The instance manager:
 - carries out the role that `targetPrimary` and the Lease give it, as
   described above;
 - sets the `Redis`'s ACL users on its own server, and keeps its TLS
-  certificate loaded, both read from Secrets on every step
+  certificate loaded, both read from Secrets every 10 seconds
   ([01-high-availability.md](completed/01-high-availability.md));
 - serves its state on port 9123: `/status` for the operator, `/ready`
   for the readiness probe, `/healthz` for the liveness probe, and
   serves neither `/status` nor a ready `/ready` from a report taken
   before its process was paused
-  ([01-high-availability.md](completed/01-high-availability.md));
+  ([01-high-availability.md](completed/01-high-availability.md)), and
+  `/metrics`, its own process and its requests to the API server;
 - takes the snapshot of a running `Backup` that names it, restores a new
   `Redis` from a snapshot before its server starts, and makes the Lease
   holder follow the source in replica mode
@@ -199,17 +203,73 @@ The instance manager:
 It talks to Redis over RESP with a small client in this repository, and
 to the API server with the same hand-written client as the operator.
 
+Every read is a direct request, which etcd answers with a quorum read,
+because the manager's reads decide fencing and promotion. It reads each
+thing only as often as a decision needs it:
+
+- the `Redis` every step, so a renewal always follows a fresh read of
+  `targetPrimary`, and a replica detaches within a step of `pending`;
+- the Lease never as its holder, which renews from the answer to its
+  own last write and reads again only after a `409` or a `404`; every
+  step as the target, so it takes a released Lease at once; and every
+  2 seconds otherwise;
+- the pods every 10 seconds, when the holder or the target changes, so
+  the address an instance follows or hands over to is current, and on
+  every step of a primary that steps down and waits for its pod to lose
+  the primary label. A step that
+  lists no pods takes the label as still there, and a holder that
+  cannot renew agrees with its peers only when it asked one for each
+  other instance, so an old list never keeps it serving;
+- the `Backup`s and the Secrets of the users and of TLS every 10
+  seconds.
+
+As the holder, every API request a step makes ends by the renew
+deadline, so a request that hangs cannot carry a step past the moment
+the holder must fence itself or prove its peers agree. Past the
+deadline, each request ends within a retry period, so the holder still
+renews once the API server answers.
+
+The manager keeps two facts the API server does not hold, besides what
+time measures. It remembers the UID of each `Backup` it uploaded, so a
+`Backup` whose `Completed` patch did not land, or that a list read
+before the patch, is not taken twice. It remembers the
+`min-replicas-to-write` its server runs, as it last read or set it, so
+a steady primary sends no `CONFIG GET` or `CONFIG SET` on each step; it
+reads the value back every 30 seconds, so a change made by hand is put
+right. The second `INFO replication` of each step stays, because a
+peer's `FAILOVER` can change the server's role without this manager
+acting.
+
 ## The operator
 
 The operator runs two replicas that elect a leader through a Lease, as
 healthchecks-operator does. It talks to the API server over HTTP with
 no client-go and no controller framework. It reconciles from watches of
 `Redis`, Pods, Leases, StatefulSets, Nodes, `Backup`s, and
-`ScheduledBackup`s, plus a timer every 2 seconds that polls each
-instance manager's `/status`. It serves Prometheus metrics, prefixed
+`ScheduledBackup`s, and from a poll of each instance manager's
+`/status`. Each `Redis` has a poller, keyed by its UID, that asks every
+manager once a second on the leader's context, apart from the passes.
+Each pass decides from a snapshot of the latest whole poll, because a
+scale-down and a failover's choice of the next primary need the
+reports of one poll together. The poller wakes a pass when a report's
+role, link, readiness, or error changes, and when the target's silence
+reaches the failure threshold, so a failover waits for no timer. A
+backstop pass every 2 seconds covers what time moves and no event
+announces: a pending failover's wait, a switchover's deadline, a
+canary's soak, and backup schedules. It serves Prometheus metrics, prefixed
 `redis_operator_`, on port 9200, or on `METRICS_PORT`. `CANARY_SOAK` and
 `CANARY_TIMEOUT` override the rollout timings of
 [04-upgrades.md](completed/04-upgrades.md).
+
+Its watches keep the rules of liken's operator guide, as
+healthchecks-operator's do, from the same `kube_watch.go` and
+`kube_store.go`: a watch that ends resumes from its last version, only a
+`410 Gone` lists again, and a watch's life from its `200` decides the
+backoff. Every event updates its store, and wakes a pass only when the
+trimmed object differs from the stored copy in more than its
+`resourceVersion` and the status the operator last wrote. A Lease is
+trimmed to its holder, so a renewal wakes nothing. A status write that
+gets `409 Conflict` wakes the next pass at once.
 
 For each `Redis` it applies a StatefulSet with `podManagementPolicy:
 Parallel` and `updateStrategy: OnDelete`. The StatefulSet gives stable

@@ -44,8 +44,9 @@ in [plans/](plans/): [the design](plans/00-design.md),
 ## Install
 
 The operator ships as a kustomize base in [deploy/](deploy/): the three
-CRDs, a ClusterRole and its binding, and a Deployment of two replicas
-that elect a leader. Pin the base and the image to the same release.
+CRDs, a ClusterRole and its binding, a Deployment of two replicas on
+different nodes that elect a leader, and a PodDisruptionBudget that lets
+a drain stop one of them at a time. Pin the base and the image to the same release.
 Releases are calendar versions, such as `2026.11.01-001`; the
 [releases page](https://github.com/chrisguidry/redis-operator/releases)
 lists them.

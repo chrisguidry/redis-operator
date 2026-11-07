@@ -41,10 +41,19 @@ import (
 const (
 	primaryLeaseDuration = 15 * time.Second
 	primaryRenewDeadline = 10 * time.Second
-	primaryRetryPeriod   = 2 * time.Second
+	primaryRetryPeriod   = 3 * time.Second
 	managerStepPeriod    = time.Second
-	switchoverTimeout    = 10 * time.Second
-	peerTimeout          = time.Second
+	// managerLeaseReadPeriod is how often an instance that neither holds
+	// nor is the target reads the primary Lease, and managerSlowReadPeriod
+	// how often any instance lists its pods and Backups and reads its
+	// Secrets (manager_reads.go). minReplicasRecheck is how often the
+	// primary reads min-replicas-to-write back from its server, to catch
+	// a change made by hand.
+	managerLeaseReadPeriod = 2 * time.Second
+	managerSlowReadPeriod  = 10 * time.Second
+	minReplicasRecheck     = 30 * time.Second
+	switchoverTimeout      = 10 * time.Second
+	peerTimeout            = time.Second
 	// handoverWait is how long a primary that is being deleted waits
 	// for the operator to name the next primary before it stops anyway.
 	handoverWait = 20 * time.Second
@@ -85,16 +94,19 @@ type managerConfig struct {
 	tlsDir    string
 	tlsPort   int
 
-	leaseDuration   time.Duration
-	renewDeadline   time.Duration
-	retryPeriod     time.Duration
-	stepPeriod      time.Duration
-	failoverTimeout time.Duration
-	handoverWait    time.Duration
-	demotionHold    time.Duration
-	routeSettle     time.Duration
-	pauseGap        time.Duration
-	fullSyncDelay   time.Duration
+	leaseDuration      time.Duration
+	renewDeadline      time.Duration
+	retryPeriod        time.Duration
+	stepPeriod         time.Duration
+	leaseReadPeriod    time.Duration
+	slowReadPeriod     time.Duration
+	minReplicasRecheck time.Duration
+	failoverTimeout    time.Duration
+	handoverWait       time.Duration
+	demotionHold       time.Duration
+	routeSettle        time.Duration
+	pauseGap           time.Duration
+	fullSyncDelay      time.Duration
 
 	// clock is the time the manager's deadlines are measured on: the
 	// Lease's expiry, the handover wait, and the demotion hold. Nil is
@@ -112,13 +124,15 @@ func (m *manager) now() time.Time {
 }
 
 type manager struct {
-	config  managerConfig
-	client  *kubeClient
-	server  *server
-	lease   *primaryLease
-	log     io.Writer
-	peers   *http.Client
-	persist bool
+	config managerConfig
+	client *kubeClient
+	server *server
+	lease  *primaryLease
+	log    io.Writer
+	// readings is served on the status port.
+	readings *managerMetrics
+	peers    *http.Client
+	persist  bool
 
 	// What the last step read from the API server. switchingOver is
 	// whether the operator moved the target with a switchover, and not
@@ -132,7 +146,28 @@ type manager struct {
 	primaryMinReplicas *int
 	instances          int
 	specInstances      int
+	pods               []Pod
 	podIPs             map[string]string
+	// When the Lease, the pods, the Backups, and the Secrets of the users
+	// and of TLS were last read (manager_reads.go).
+	leaseReadAt time.Time
+	podsReadAt  time.Time
+	// podsHolder and podsTarget are the holder and the target when the
+	// pods were last listed.
+	podsHolder    string
+	podsTarget    string
+	backupsReadAt time.Time
+	accessReadAt  time.Time
+	// minApplied is the min-replicas-to-write this server runs, as the
+	// manager last read or set it, and minCheckedAt when it last read it
+	// back.
+	minApplied   *int
+	minCheckedAt time.Time
+	// completedBackups holds the UID of each Backup this instance
+	// uploaded, so a Backup whose Completed patch did not land, or that
+	// a list read before the patch, is not taken again. The snapshot's
+	// goroutine writes it.
+	completedBackups sync.Map
 
 	hasData       bool
 	lastRenew     time.Time
@@ -182,10 +217,11 @@ func newManager(config managerConfig, client *kubeClient, log io.Writer) *manage
 			client: client, namespace: config.namespace, name: primaryLeaseName(config.redisName),
 			identity: config.podName, duration: config.leaseDuration,
 		},
-		log:    log,
-		peers:  &http.Client{Timeout: peerTimeout},
-		podIPs: map[string]string{},
-		report: instanceReport{Name: config.podName, Role: reportStarting},
+		log:      log,
+		readings: newManagerMetrics(),
+		peers:    &http.Client{Timeout: peerTimeout},
+		podIPs:   map[string]string{},
+		report:   instanceReport{Name: config.podName, Role: reportStarting},
 	}
 }
 
@@ -329,8 +365,14 @@ func (m *manager) step(ctx context.Context) {
 	// The report's time is on the wall clock, the clock the pause
 	// watch's beats are on.
 	started := time.Now()
+	checked := m.checkIsolationFirst(ctx)
+	api, cancel := m.apiContext(ctx)
+	defer cancel()
+	apiErr := m.readDecision(api, m.now())
+	// The clock is read again after the read, which can take as long as
+	// its deadline, so a slow read never makes the Lease look younger
+	// than it is.
 	now := m.now()
-	apiErr := m.readDecision(ctx, now)
 	info, err := m.server.replication(ctx)
 	if err != nil {
 		m.setReport(instanceReport{Name: m.config.podName, Role: reportStarting, Error: errorText(err)}, started)
@@ -344,18 +386,20 @@ func (m *manager) step(ctx context.Context) {
 			m.enableAOF = false
 		}
 	}
-	if apiErr == nil {
-		m.keepAccess(ctx)
+	if apiErr == nil && due(now, m.accessReadAt, m.config.slowReadPeriod) {
+		m.accessReadAt = now
+		m.keepAccess(api)
 	}
 	// A server that has no data yet, such as a replica before its first
 	// sync, would upload an empty snapshot as a completed backup.
-	if apiErr == nil && m.hasData {
-		m.startBackups(ctx)
+	if apiErr == nil && m.hasData && due(now, m.backupsReadAt, m.config.slowReadPeriod) {
+		m.backupsReadAt = now
+		m.startBackups(api)
 	}
 
 	var actErr error
 	if m.lease.held() {
-		actErr = m.stepAsHolder(ctx, now, apiErr, info)
+		actErr = m.stepAsHolder(ctx, api, apiErr, info, checked)
 	} else if apiErr == nil {
 		actErr = m.stepAsOther(ctx, now, info)
 	}
@@ -370,60 +414,11 @@ func (m *manager) step(ctx context.Context) {
 	}
 	report := m.reportFrom(info, actErr)
 	if info.role == "master" {
-		if applied, err := m.server.minReplicasToWrite(ctx); err == nil {
+		if applied, err := m.appliedMinReplicas(ctx); err == nil {
 			report.MinReplicasToWrite = &applied
 		}
 	}
 	m.setReport(report, started)
-}
-
-func (m *manager) readDecision(ctx context.Context, now time.Time) error {
-	// Until a read of this pod says otherwise, it may still carry the
-	// primary label.
-	m.labeledPrimary = true
-	var redis Redis
-	if err := m.client.get(ctx, redisResource, m.config.namespace, m.config.redisName, &redis); err != nil {
-		return err
-	}
-	m.target = redis.Status.TargetPrimary
-	m.switchingOver = redis.Status.Switchover != nil
-	m.everHadPrimary = redis.Status.CurrentPrimary != ""
-	m.minReplicas = redis.minReplicasToWrite()
-	m.primaryMinReplicas = nil
-	for _, instance := range redis.Status.Instances {
-		if instance.Role == reportPrimary {
-			m.primaryMinReplicas = instance.MinReplicasToWrite
-		}
-	}
-	// A scale-down that waits keeps pods beyond spec.instances, and
-	// the operator lists every pod in the status.
-	m.instances = max(redis.Spec.instances(), len(redis.Status.Instances))
-	m.specInstances = redis.Spec.instances()
-	m.replicaMode = redis.Status.replicating() && redis.Spec.Replica != nil
-	if redis.Spec.Replica != nil {
-		m.replicaSource = redis.Spec.Replica.Source
-	}
-	if err := m.lease.read(ctx, now); err != nil {
-		return err
-	}
-	var pods struct {
-		Items []Pod `json:"items"`
-	}
-	if err := m.client.list(ctx, podsResource, m.config.namespace, clusterLabel+"="+m.config.redisName, &pods); err != nil {
-		return err
-	}
-	ips := map[string]string{}
-	for _, pod := range pods.Items {
-		if pod.Status.PodIP != "" {
-			ips[pod.Metadata.Name] = pod.Status.PodIP
-		}
-		if pod.Metadata.Name == m.config.podName {
-			m.labeledPrimary = pod.Metadata.Labels[roleLabel] == rolePrimary
-		}
-	}
-	m.podIPs = ips
-	m.readAccessDecision(redis, pods.Items)
-	return nil
 }
 
 // say writes one line to the log.

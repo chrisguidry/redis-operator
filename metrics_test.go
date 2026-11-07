@@ -38,7 +38,56 @@ func TestMetricsStartEverySeriesAtZero(t *testing.T) {
 		`redis_operator_switchovers_total{reason="NodeCordoned"} 0`,
 		`redis_operator_watch_restarts_total{resource="redis"} 0`,
 		"redis_operator_leader 0",
+		`redis_operator_polls_total{outcome="unanswered"} 0`,
+		`redis_operator_passes_total{cause="backstop"} 0`,
+		`redis_operator_status_writes_total{resource="redis"} 0`,
 	} {
 		mustMatch(t, slices.Contains(samples, want), true)
 	}
+}
+
+// /healthz fails while this replica leads and its watches have not all
+// listed, so a leader that cannot read the cluster is not Ready. A
+// standby holds no watches and is healthy.
+func TestHealthzFailsUntilTheLeadersWatchesHaveListed(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		leading bool
+		synced  bool
+		code    int
+	}{
+		{"a standby", false, false, http.StatusOK},
+		{"a leader that is still listing", true, false, http.StatusServiceUnavailable},
+		{"a leader whose watches listed", true, true, http.StatusOK},
+	}
+	for _, one := range cases {
+		t.Run(one.name, func(t *testing.T) {
+			t.Parallel()
+			m := newMetrics("dev")
+			m.setLeader(one.leading)
+			m.setSynced(one.synced)
+			address, err := m.serve(t.Context(), "127.0.0.1:0")
+			mustSucceed(t, err)
+
+			resp, err := http.Get("http://" + address.String() + "/healthz")
+			mustSucceed(t, err)
+			_ = resp.Body.Close()
+
+			mustMatch(t, resp.StatusCode, one.code)
+		})
+	}
+}
+
+// The leader measures the replica lag, so an operator that loses its
+// Lease exports none of it as a standby.
+func TestAStandbyExportsNoLag(t *testing.T) {
+	t.Parallel()
+	m := newMetrics("dev")
+	m.setLeader(true)
+	m.replicaLag.WithLabelValues(testNamespace, "cache").Set(5)
+
+	m.setLeader(false)
+
+	mustMatch(t, len(lagSeries(t, m)), 0)
 }
