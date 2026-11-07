@@ -39,6 +39,7 @@ type metrics struct {
 	failovers       prometheus.Counter
 	switchovers     *prometheus.CounterVec
 	leader          prometheus.Gauge
+	replicaLag      *prometheus.GaugeVec
 }
 
 func newMetrics(version string) *metrics {
@@ -60,6 +61,10 @@ func newMetrics(version string) *metrics {
 			Name: metricsPrefix + "switchovers_total",
 			Help: "Planned switchovers started, by reason, counted once the start is written to the Redis's status.",
 		}, []string{"reason"}),
+		replicaLag: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: metricsPrefix + "replica_lag_bytes",
+			Help: "How many bytes the holder of a Redis in replica mode is behind its source, as the operator last measured it.",
+		}, []string{"namespace", "redis"}),
 		leader: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: metricsPrefix + "leader",
 			Help: "1 while this replica holds the Lease and does the work, and 0 while it waits as a standby.",
@@ -78,7 +83,7 @@ func newMetrics(version string) *metrics {
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		buildInfo,
-		m.reconcileErrors, m.watchRestarts, m.failovers, m.switchovers, m.leader,
+		m.reconcileErrors, m.watchRestarts, m.failovers, m.switchovers, m.leader, m.replicaLag,
 	)
 
 	// Every series starts at zero on the first scrape. Prometheus

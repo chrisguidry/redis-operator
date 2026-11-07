@@ -191,6 +191,7 @@ that selects `app: redis-operator`. The series:
 | `redis_operator_failovers_total` | failovers started, counted once the start is written to the `Redis`'s status |
 | `redis_operator_switchovers_total{reason}` | planned switchovers started, by reason: `NodeCordoned`, `PodDeleted`, `Rollout`, or `ScaleDown`, counted once the start is written to the `Redis`'s status |
 | `redis_operator_watch_restarts_total{resource}` | watches that ended and were opened again |
+| `redis_operator_replica_lag_bytes{namespace,redis}` | bytes the holder of a `Redis` in replica mode is behind its source, as last measured |
 
 Every Redis instance pod also runs redis_exporter in a container named
 `metrics`, on port 9121, the container port named `metrics`. Its series

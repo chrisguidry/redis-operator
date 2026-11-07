@@ -20,6 +20,11 @@ import (
 const sourcePause = 30 * time.Second
 
 func (d *decision) replica(ctx context.Context) {
+	defer func() {
+		if replica := d.status.Replica; replica == nil || replica.Phase != replicaReplicating {
+			d.c.readings.replicaLag.DeleteLabelValues(d.r.Metadata.Namespace, d.r.Metadata.Name)
+		}
+	}()
 	spec := d.r.Spec.Replica
 	status := d.status.Replica
 	switch {
@@ -118,9 +123,33 @@ func (d *decision) measureLag(ctx context.Context) {
 	}
 	d.setCondition("SourceReachable", ConditionTrue, "Reachable", "")
 	ours, _ := d.holderOffset()
+	lag := max(offset-ours, 0)
+	d.c.readings.replicaLag.WithLabelValues(d.r.Metadata.Namespace, d.r.Metadata.Name).Set(float64(lag))
 	d.status.Replica.Source = address
-	d.status.Replica.SourceOffset = offset
-	d.status.Replica.Lag = max(offset-ours, 0)
+	// The lag moves with every write the source takes, so the status
+	// records it only when it crosses a bucket, and the metric carries
+	// the live value. A status write on every pass would wake every
+	// watcher of the Redis on every pass.
+	if lagBucket(lag) != lagBucket(d.status.Replica.Lag) || d.status.Replica.SourceOffset == 0 {
+		d.status.Replica.SourceOffset = offset
+		d.status.Replica.Lag = lag
+	}
+}
+
+// lagBuckets are the edges at which a change of the lag is written to
+// the status: caught up, within a canary's reach, far behind, and a
+// full copy behind.
+var lagBuckets = []int64{0, 1 << 20, 64 << 20, 1 << 30}
+
+// lagBucket is the number of bucket edges lag is beyond.
+func lagBucket(lag int64) int {
+	bucket := 0
+	for _, edge := range lagBuckets {
+		if lag > edge {
+			bucket++
+		}
+	}
+	return bucket
 }
 
 // startPromotion pauses writes on the source and marks the promotion

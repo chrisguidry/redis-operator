@@ -125,7 +125,11 @@ Wait for:
   message says why the operator cannot connect to the source;
 - `status.replica.lag`, the bytes the holder is behind the source,
   near 0. `status.replica.source` is the address the operator last
-  reached and `sourceOffset` the source's offset.
+  reached and `sourceOffset` the source's offset. The status records
+  the lag only when it crosses one of 0, 1 MiB, 64 MiB, and 1 GiB, so it
+  is not written on every pass. The operator's metric
+  `redis_operator_replica_lag_bytes{namespace,redis}` carries the live
+  value.
 
 Compare the key counts. On the instance that holds the Lease, which
 `status.currentPrimary` names:
@@ -246,7 +250,7 @@ except for `CatchUpTimedOut`.
 
 | Reason | Meaning | What to do |
 |---|---|---|
-| `CatchUpTimedOut` | The holder had not reached the source's offset 25 seconds into the 30-second pause. The message gives both offsets, or says the holder had no link to the source, or that the source's offset could not be read. The source takes writes again between attempts. | Usually the clients are still writing, or the link is slow. Stop the clients, check `status.replica.lag`, and let the next attempt run. |
+| `CatchUpTimedOut` | The holder had not reached the source's offset 25 seconds into the 30-second pause. The message gives both offsets, or says the holder had no link to the source, or that the source's offset could not be read. The source takes writes again between attempts. | Usually the clients are still writing, or the link is slow. Stop the clients, check `redis_operator_replica_lag_bytes`, and let the next attempt run. |
 | `PauseRefused` | The source answered, and refused `CLIENT PAUSE`, for example because the command is renamed, the user lacks the permission, or the source requires a password and `spec.replica.source` names none (`NOAUTH`). The source is up and still takes writes. | Allow `CLIENT PAUSE` on the source, or stop its clients and remove `spec.replica`. |
 | `SourceRefused` | The source answered the connection with an error, such as a wrong password. It is up and may still take writes. | Fix the password in the Secret, or the source's settings. |
 | `SourceUnreachableFromOperator` | The operator cannot reach the source or its sentinels, and the holder's link to the source is up. | Admit the operator's pods to the source; see the section above. |
