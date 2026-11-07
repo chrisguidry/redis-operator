@@ -126,13 +126,18 @@ func (d *decision) measureLag(ctx context.Context) {
 	lag := max(offset-ours, 0)
 	d.c.readings.replicaLag.WithLabelValues(d.r.Metadata.Namespace, d.r.Metadata.Name).Set(float64(lag))
 	d.status.Replica.Source = address
-	// The lag moves with every write the source takes, so the status
-	// records it only when it crosses a bucket, and the metric carries
-	// the live value. A status write on every pass would wake every
-	// watcher of the Redis on every pass.
-	if lagBucket(lag) != lagBucket(d.status.Replica.Lag) || d.status.Replica.SourceOffset == 0 {
-		d.status.Replica.SourceOffset = offset
-		d.status.Replica.Lag = lag
+	recordLag(d.status.Replica, offset, lag)
+}
+
+// recordLag sets the source's offset and the lag in the status when the
+// lag crosses a bucket, or when the status holds no offset yet. The lag
+// moves with every write the source takes, and a status write on every
+// pass would wake every watcher of the Redis on every pass, so the
+// metric carries the live value.
+func recordLag(replica *ReplicaStatus, offset, lag int64) {
+	if lagBucket(lag) != lagBucket(replica.Lag) || replica.SourceOffset == 0 {
+		replica.SourceOffset = offset
+		replica.Lag = lag
 	}
 }
 

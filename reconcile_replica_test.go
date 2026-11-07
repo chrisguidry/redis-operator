@@ -3,12 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
-	"strconv"
+	"slices"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // replicaOf declares replica mode on the harness's Redis for a source at
@@ -60,6 +58,7 @@ func TestANewRedisNamingASourceReplicatesAndReportsItsLag(t *testing.T) {
 	replica := h.redis().Status.Replica
 	mustMatch(t, replica.Source, fmt.Sprintf("%s:%d", host, port))
 	mustMatch(t, replica.Lag, replica.SourceOffset)
+	mustMatch(t, slices.Contains(scrape(t, h.c.readings), fmt.Sprintf(`redis_operator_replica_lag_bytes{namespace=%q,redis="cache"} %d`, testNamespace, replica.Lag)), true)
 }
 
 func TestPromotionPausesTheSourceAndWaitsForTheHolder(t *testing.T) {
@@ -372,44 +371,30 @@ func TestAReplicatingRedisWhoseInstancesRestartEmptyCopiesTheSourceAgain(t *test
 }
 
 // The lag moves with every write to the source, so the status records
-// it only when it crosses a bucket, and the metric carries the live
-// value.
-func TestTheLagIsWrittenOnlyWhenItCrossesABucket(t *testing.T) {
+// it only when it crosses a bucket, or when it holds none yet.
+func TestTheLagIsRecordedOnlyWhenItCrossesABucket(t *testing.T) {
 	t.Parallel()
-	source := startSource(t, "redis")
-	host, port := sourceHostPort(source)
-	followSource(t, source)
-	h := startHarness(t, 2)
-	h.replicaOf(host, port, true)
-	h.pass()
-	h.adoptingHolder(host, 0)
-	h.pass()
-	written := h.redis()
-
-	h.adoptingHolder(host, 1)
-	h.pass()
-	unmoved := h.redis()
-	live := testutil.ToFloat64(h.c.readings.replicaLag.WithLabelValues(testNamespace, h.name))
-	_, err := sourceClient(t, source).do(context.Background(), "SET", "large", strings.Repeat("x", 2<<20))
-	mustSucceed(t, err)
-	h.pass()
-
-	mustMatch(t, unmoved.Metadata.ResourceVersion, written.Metadata.ResourceVersion)
-	mustMatch(t, live, float64(written.Status.Replica.Lag-1))
-	mustMatch(t, h.redis().Status.Replica.Lag > 2<<20, true)
-}
-
-// followSource starts a server that replicates source, because a server
-// with no replica keeps no backlog, and its offset does not move.
-func followSource(t *testing.T, source *testServer) {
-	t.Helper()
-	host, port := sourceHostPort(source)
-	follower := startTestServer(t, "redis")
-	for _, command := range [][]string{{"CONFIG", "SET", "masterauth", sourcePassword}, {"REPLICAOF", host, strconv.Itoa(port)}} {
-		_, err := follower.client(t).do(context.Background(), command...)
-		mustSucceed(t, err)
+	cases := []struct {
+		name     string
+		held     ReplicaStatus
+		offset   int64
+		lag      int64
+		recorded ReplicaStatus
+	}{
+		{"the first measure", ReplicaStatus{}, 100, 0, ReplicaStatus{SourceOffset: 100}},
+		{"a lag that stays caught up", ReplicaStatus{SourceOffset: 100}, 900, 0, ReplicaStatus{SourceOffset: 100}},
+		{"a lag that stays near", ReplicaStatus{SourceOffset: 100, Lag: 10}, 900, 800, ReplicaStatus{SourceOffset: 100, Lag: 10}},
+		{"a lag that falls behind", ReplicaStatus{SourceOffset: 100, Lag: 10}, 9 << 20, 8 << 20, ReplicaStatus{SourceOffset: 9 << 20, Lag: 8 << 20}},
+		{"a lag that catches up", ReplicaStatus{SourceOffset: 100, Lag: 10}, 900, 0, ReplicaStatus{SourceOffset: 900}},
 	}
-	_, err := sourceClient(t, source).do(context.Background(), "SET", "first", "write")
-	mustSucceed(t, err)
-	eventually(t, "the source's offset to move", func() bool { return sourceOffsetOf(t, source) > 0 })
+	for _, one := range cases {
+		t.Run(one.name, func(t *testing.T) {
+			t.Parallel()
+			replica := one.held
+
+			recordLag(&replica, one.offset, one.lag)
+
+			mustMatch(t, replica, one.recorded)
+		})
+	}
 }
