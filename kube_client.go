@@ -265,9 +265,23 @@ func (c *kubeClient) get(ctx context.Context, resource kubeResource, namespace, 
 // labels match it, and an empty one lists them all. The list's
 // resourceVersion is where a watch resumes.
 func (c *kubeClient) list(ctx context.Context, resource kubeResource, namespace, selector string, out any) error {
+	return c.listSelected(ctx, resource, namespace, selector, "", out)
+}
+
+// listSelected is list with a field selector too, such as
+// "metadata.name=gear", which RBAC matches against a rule's
+// resourceNames.
+func (c *kubeClient) listSelected(ctx context.Context, resource kubeResource, namespace, selector, fields string, out any) error {
 	path := resource.path(namespace, "")
+	query := url.Values{}
 	if selector != "" {
-		path += "?" + url.Values{"labelSelector": {selector}}.Encode()
+		query.Set("labelSelector", selector)
+	}
+	if fields != "" {
+		query.Set("fieldSelector", fields)
+	}
+	if len(query) > 0 {
+		path += "?" + query.Encode()
 	}
 	return c.request(ctx, http.MethodGet, path, "", nil, out)
 }
@@ -277,6 +291,11 @@ func (c *kubeClient) list(ctx context.Context, resource kubeResource, namespace,
 // owns the response body. Bookmarks keep the resume point current
 // while nothing changes.
 func (c *kubeClient) watch(ctx context.Context, resource kubeResource, namespace, selector, resourceVersion string) (*http.Response, error) {
+	return c.watchSelected(ctx, resource, namespace, selector, "", resourceVersion)
+}
+
+// watchSelected is watch with a field selector too.
+func (c *kubeClient) watchSelected(ctx context.Context, resource kubeResource, namespace, selector, fields, resourceVersion string) (*http.Response, error) {
 	query := url.Values{
 		"watch":               {"true"},
 		"allowWatchBookmarks": {"true"},
@@ -284,6 +303,9 @@ func (c *kubeClient) watch(ctx context.Context, resource kubeResource, namespace
 	}
 	if selector != "" {
 		query.Set("labelSelector", selector)
+	}
+	if fields != "" {
+		query.Set("fieldSelector", fields)
 	}
 	return c.send(ctx, http.MethodGet, resource.path(namespace, "")+"?"+query.Encode(), "", nil)
 }

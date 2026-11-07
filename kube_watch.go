@@ -41,9 +41,12 @@ type collectionWatch struct {
 	client    *kubeClient
 	resource  kubeResource
 	namespace string
-	// selector limits the watch to the objects whose labels match it.
-	// Empty watches every object in the collection.
+	// selector limits the watch to the objects whose labels match it,
+	// and fields to those whose fields match it, such as
+	// "metadata.name=gear". Empty watches every object in the
+	// collection.
 	selector string
+	fields   string
 	store    *objectStore
 	wake     chan<- struct{}
 	// restarted runs each time the watch opens a stream after the first,
@@ -193,7 +196,7 @@ func (w *collectionWatch) run(ctx context.Context, resourceVersion string) {
 // stream opens one watch from resourceVersion and reads it to its end.
 // accepted runs when the API server answers 200.
 func (w *collectionWatch) stream(ctx context.Context, resourceVersion string, accepted func()) streamResult {
-	resp, err := w.client.watch(ctx, w.resource, w.namespace, w.selector, resourceVersion)
+	resp, err := w.client.watchSelected(ctx, w.resource, w.namespace, w.selector, w.fields, resourceVersion)
 	if err != nil {
 		return streamResult{end: streamRefused, version: resourceVersion, reason: err.Error()}
 	}
@@ -221,7 +224,7 @@ func (w *collectionWatch) list(ctx context.Context) (string, error) {
 		} `json:"metadata"`
 		Items []json.RawMessage `json:"items"`
 	}
-	if err := w.client.list(ctx, w.resource, w.namespace, w.selector, &list); err != nil {
+	if err := w.client.listSelected(ctx, w.resource, w.namespace, w.selector, w.fields, &list); err != nil {
 		return "", err
 	}
 	w.store.replace(list.Items)
