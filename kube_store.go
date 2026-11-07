@@ -113,12 +113,13 @@ func (s *objectStore) replace(items []json.RawMessage) {
 	}
 }
 
-// put stores an object from an ADDED or MODIFIED event. Events arrive
+// put stores an object from an ADDED or MODIFIED event, and reports
+// whether the change wakes a pass, which every change does. Events arrive
 // in the order the API server made the changes, and resourceVersions
 // are opaque, so the newest event always wins. An object that does not
 // decode removes the older copy under its key, so the pass acts on no
 // version that the cluster has replaced.
-func (s *objectStore) put(key string, object json.RawMessage) {
+func (s *objectStore) put(key string, object json.RawMessage) bool {
 	trimmed, err := s.trim(object)
 	s.mutex.Lock()
 	previous := s.rejected[key]
@@ -133,13 +134,17 @@ func (s *objectStore) put(key string, object json.RawMessage) {
 	if err != nil && previous != err.Error() {
 		s.skipped(key, err.Error())
 	}
+	return true
 }
 
-func (s *objectStore) remove(key string) {
+// remove forgets an object, and reports whether the change wakes a
+// pass, which every change does.
+func (s *objectStore) remove(key string) bool {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	delete(s.objects, key)
 	delete(s.rejected, key)
+	return true
 }
 
 // snapshot returns every object, in namespace/name order as a list

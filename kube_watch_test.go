@@ -1,7 +1,7 @@
 package main
 
 import (
-	"encoding/json"
+	"bufio"
 	"maps"
 	"net/http"
 	"strings"
@@ -18,6 +18,7 @@ func TestReadWatchEventsKeepsTheStore(t *testing.T) {
 		deleted  = `{"type":"DELETED","object":{"metadata":{"namespace":"shop","name":"gear","resourceVersion":"13"}}}`
 		bookmark = `{"type":"BOOKMARK","object":{"metadata":{"resourceVersion":"11"}}}`
 		gone     = `{"type":"ERROR","object":{"kind":"Status","code":410}}`
+		failed   = `{"type":"ERROR","object":{"kind":"Status","code":500}}`
 		garbled  = `{"type":"ADDED","object":{"metadata":"gear"}}`
 		later    = `{"type":"MODIFIED","object":{"metadata":{"namespace":"shop","name":"gear","resourceVersion":"99"}}}`
 	)
@@ -25,27 +26,46 @@ func TestReadWatchEventsKeepsTheStore(t *testing.T) {
 		name    string
 		events  []string
 		version string
+		end     streamEnd
 		wakes   int
 		stored  map[string]string
 	}{
-		{"a bookmark moves only the version", []string{bookmark}, "11", 0, map[string]string{}},
-		{"an added object is stored", []string{added}, "10", 1, map[string]string{"shop/gear": "10"}},
-		{"a modified object replaces the stored one", []string{added, modified}, "12", 1, map[string]string{"shop/gear": "12"}},
-		{"a deleted object leaves the store", []string{added, deleted}, "13", 1, map[string]string{}},
-		{"an error ends the stream", []string{added, gone, later}, "10", 1, map[string]string{"shop/gear": "10"}},
-		{"an event with no readable metadata ends the stream", []string{added, garbled, later}, "10", 1, map[string]string{"shop/gear": "10"}},
+		{"a bookmark moves only the version", []string{bookmark}, "11", streamClosed, 0, map[string]string{}},
+		{"an added object is stored", []string{added}, "10", streamClosed, 1, map[string]string{"shop/gear": "10"}},
+		{"a modified object replaces the stored one", []string{added, modified}, "12", streamClosed, 1, map[string]string{"shop/gear": "12"}},
+		{"a deleted object leaves the store", []string{added, deleted}, "13", streamClosed, 1, map[string]string{}},
+		{"a 410 ends the stream", []string{added, gone, later}, "10", streamGone, 1, map[string]string{"shop/gear": "10"}},
+		{"another error ends the stream", []string{added, failed, later}, "10", streamBroken, 1, map[string]string{"shop/gear": "10"}},
+		{"an event with no readable metadata ends the stream", []string{added, garbled, later}, "10", streamBroken, 1, map[string]string{"shop/gear": "10"}},
+		{"a line that does not decode ends the stream", []string{added, `{"type":`, later}, "10", streamBroken, 1, map[string]string{"shop/gear": "10"}},
 	}
 	for _, one := range cases {
 		t.Run(one.name, func(t *testing.T) {
 			store, _ := newTestStore(trimTo[storedMeta])
 			wake := make(chan struct{}, 1)
-			decoder := json.NewDecoder(strings.NewReader(strings.Join(one.events, "\n")))
+			reader := bufio.NewReader(strings.NewReader(strings.Join(one.events, "\n") + "\n"))
 
-			mustMatch(t, readWatchEvents(decoder, store, "1", wake), one.version)
+			version, end, _ := readWatchEvents(reader, store, "1", wake)
+
+			mustMatch(t, version, one.version)
+			mustMatch(t, end, one.end)
 			mustMatch(t, len(wake), one.wakes)
 			mustMatchMap(t, storedVersions(t, store), one.stored)
 		})
 	}
+}
+
+// A line that the connection cut before its newline is a dropped
+// stream, which resumes, not an event that does not decode.
+func TestALineTheConnectionCutEndsTheStreamAsADrop(t *testing.T) {
+	t.Parallel()
+	store, _ := newTestStore(trimTo[storedMeta])
+	reader := bufio.NewReader(strings.NewReader(`{"type":"ADDED","object":{"metadata":{"namespace":"shop","name":"gear","resourceVersion":"10"}}}` + "\n" + `{"type":"MODIFIED","obj`))
+
+	version, end, _ := readWatchEvents(reader, store, "1", make(chan struct{}, 1))
+
+	mustMatch(t, version, "10")
+	mustMatch(t, end, streamClosed)
 }
 
 // widgetWatch is a watch on every namespace's widgets, with the channel
@@ -202,29 +222,27 @@ func widgetSizes(t *testing.T, store *objectStore) map[string]string {
 	return sizes
 }
 
-// A dropped stream lists the collection, wakes the loop, and watches
-// again from the list's resourceVersion.
-func TestADroppedWatchRelistsAndResumes(t *testing.T) {
+// A dropped stream resumes from the last version it delivered, with
+// no list, and the store keeps what it held.
+func TestADroppedWatchResumesWithNoList(t *testing.T) {
 	t.Parallel()
 	api := startFakeKube(t)
 	watch := startWidgetWatch(t, api.client, "0")
 	waitForWatchFrom(t, api, "0")
 	api.create(widgets, newWidget("shop", "gear"))
 	api.create(widgets, newWidget("shop", "bolt"))
-	waitForWake(t, watch.wake)
+	waitForStore(t, api, watch.store)
 
 	api.dropWatches()
 
-	waitForWake(t, watch.wake)
 	waitForWatchFrom(t, api, "2")
-	mustMatch(t, api.requestCount("GET", "/apis/example.com/v1/widgets", false), 1)
-	mustMatch(t, api.requestCount("GET", "/apis/example.com/v1/widgets", true), 2)
+	mustMatch(t, api.requestCount("GET", "/apis/example.com/v1/widgets", false), 0)
 	mustMatch(t, watch.restarts.Load(), 1)
+	mustMatchMap(t, storedVersions(t, watch.store), map[string]string{"shop/gear": "1", "shop/bolt": "2"})
 }
 
-// An object deleted while the stream is down has no event for the
-// watch to read. The list after the drop replaces the store, so the
-// object is gone from it.
+// An object deleted while the stream is down reaches the store through
+// the watch that resumes from the version before the delete.
 func TestADeleteWhileTheStreamIsDownLeavesTheStore(t *testing.T) {
 	t.Parallel()
 	api := startFakeKube(t)
@@ -238,10 +256,10 @@ func TestADeleteWhileTheStreamIsDownLeavesTheStore(t *testing.T) {
 	api.dropWatches()
 	api.delete(widgets, "shop", "bolt")
 
-	// The watch after the list starts from the delete's version, so the
-	// list, not an event, took the widget out of the store.
-	waitForWatchFrom(t, api, "3")
+	waitForWatchFrom(t, api, "2")
+	waitForStore(t, api, watch.store)
 	mustMatchMap(t, storedVersions(t, watch.store), map[string]string{"shop/gear": "1"})
+	mustMatch(t, api.requestCount("GET", "/apis/example.com/v1/widgets", false), 1)
 }
 
 // A 410 Gone means the API server no longer has the watch's version.

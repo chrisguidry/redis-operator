@@ -50,7 +50,7 @@ func newMetrics(version string) *metrics {
 		}),
 		watchRestarts: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: metricsPrefix + "watch_restarts_total",
-			Help: "Watches that ended and opened again after a list, by resource.",
+			Help: "Watches that ended and opened again, by resource.",
 		}, []string{"resource"}),
 		failovers: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: metricsPrefix + "failovers_total",
