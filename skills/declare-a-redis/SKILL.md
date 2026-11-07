@@ -358,7 +358,8 @@ In the status:
   be primary, or `pending` while a failover chooses one.
 - `currentPrimary` is the instance that holds the Lease.
 - `instances` lists each pod with its `role` (`primary`, `replica`,
-  `detached`, or `starting`), `ready`, and replication `offset`.
+  `detached`, or `starting`) and `ready`. The replication offsets are
+  redis_exporter's series, such as `redis_master_repl_offset`.
 - `switchover` is set while a planned switchover runs, with `from`,
   `to`, `reason`, and `startedAt`.
 

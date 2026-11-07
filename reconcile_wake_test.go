@@ -89,3 +89,19 @@ func TestAConflictOnTheStatusWriteWakesTheNextPass(t *testing.T) {
 
 	mustMatch(t, h.woke(), true)
 }
+
+// The replication offsets move with every write, so the status holds
+// none of them, and a pass whose only news is a later offset writes
+// nothing.
+func TestOffsetsThatMoveWriteNoStatus(t *testing.T) {
+	t.Parallel()
+	h := startHarness(t, 3)
+	h.steady("cache-0", 3)
+	h.settle()
+	before := h.redis().Metadata.ResourceVersion
+
+	h.steadyAt("cache-0", 3, 5000)
+	h.pass()
+
+	mustMatch(t, h.redis().Metadata.ResourceVersion, before)
+}

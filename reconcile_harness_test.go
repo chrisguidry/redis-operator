@@ -122,14 +122,19 @@ func (h *harness) silence(name string) {
 // steady sets the reports and the Lease of a healthy Redis whose
 // primary is primary.
 func (h *harness) steady(primary string, instances int) {
+	h.steadyAt(primary, instances, 100)
+}
+
+// steadyAt is steady with every instance at offset.
+func (h *harness) steadyAt(primary string, instances int, offset int64) {
 	h.holdLease(primary)
 	for i := range instances {
 		name := instanceName(h.name, i)
 		if name == primary {
-			h.setReport(instanceReport{Name: name, Role: reportPrimary, HoldsLease: true, Target: primary, Offset: 100, HasData: true, Ready: true, SyncedReplicas: instances - 1})
+			h.setReport(instanceReport{Name: name, Role: reportPrimary, HoldsLease: true, Target: primary, Offset: offset, HasData: true, Ready: true, SyncedReplicas: instances - 1})
 			continue
 		}
-		h.setReport(instanceReport{Name: name, Role: reportReplica, Target: primary, Offset: 100, LinkUp: true, Following: h.ip(primary), HasData: true, Ready: true})
+		h.setReport(instanceReport{Name: name, Role: reportReplica, Target: primary, Offset: offset, LinkUp: true, Following: h.ip(primary), HasData: true, Ready: true})
 	}
 }
 

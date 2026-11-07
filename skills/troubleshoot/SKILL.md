@@ -17,7 +17,7 @@ The examples use the `Redis` `cache` in the namespace `example`.
 ```sh
 kubectl -n example get redis cache -o wide
 kubectl -n example get redis cache -o jsonpath='{range .status.conditions[*]}{.type}={.status} {.reason}: {.message}{"\n"}{end}'
-kubectl -n example get redis cache -o jsonpath='{range .status.instances[*]}{.name} {.role} ready={.ready} offset={.offset}{"\n"}{end}'
+kubectl -n example get redis cache -o jsonpath='{range .status.instances[*]}{.name} {.role} ready={.ready}{"\n"}{end}'
 kubectl -n example get pods -l redis.guid.foo/cluster=cache -L redis.guid.foo/role -o wide
 ```
 
@@ -55,9 +55,9 @@ the same wait for a scale-up.
 A `ScalingDown` reason that stays for more than a few seconds with no
 other message means the operator waits for the replicas the
 scale-down removes to detach, or for the replicas that stay to reach
-their offsets. Each instance's offset is in `status.instances`; a
-replica that stays and is not linked to the primary holds the
-scale-down until it is.
+their offsets. redis_exporter's `redis_master_repl_offset` on each
+instance gives the offsets; a replica that stays and is not linked to
+the primary holds the scale-down until it is.
 
 A `ScalingDown` message that says the holder's `pod is not ready or its
 manager did not answer as primary` means the instance that holds the
@@ -115,8 +115,11 @@ Each entry is what that pod's instance manager last reported:
 | `detached` | the server is a replica of nothing, refuses writes, and keeps its data: during a failover, while no instance holds the Lease, or after it fenced itself |
 | `starting` | the instance manager has not answered yet, or cannot reach its server |
 
-`offset` is the replication offset. A replica far behind the primary's
-offset is still syncing or has a broken link.
+The status holds no replication offset, because it changes with every
+write. redis_exporter's `redis_master_repl_offset` gives each
+instance's offset, and `redis_connected_slave_offset_bytes` on the
+primary each replica's. A replica far behind the primary's offset is
+still syncing or has a broken link.
 
 `minReplicasToWrite`, on the primary's entry only, is the
 `min-replicas-to-write` its server runs with. It trails

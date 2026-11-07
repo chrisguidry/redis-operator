@@ -366,7 +366,7 @@ func (d *decision) summarize(pods []Pod) {
 		if role == "" {
 			role = reportStarting
 		}
-		instances = append(instances, InstanceStatus{Name: pod.Metadata.Name, Role: role, Ready: pod.ready(), Offset: report.Offset, MinReplicasToWrite: report.MinReplicasToWrite})
+		instances = append(instances, InstanceStatus{Name: pod.Metadata.Name, Role: role, Ready: pod.ready(), MinReplicasToWrite: report.MinReplicasToWrite})
 		if pod.ready() {
 			ready++
 		}
