@@ -54,6 +54,21 @@ func TestAPollWakesThePassOnlyForAChangeADecisionReads(t *testing.T) {
 		{"an error", func(h *harness) {
 			h.setReport(instanceReport{Name: "cache-2", Role: reportStarting, Error: "connection refused"})
 		}, true},
+		{"the address a replica follows", func(h *harness) {
+			h.setReport(instanceReport{Name: "cache-2", Role: reportReplica, Target: "cache-0", Offset: 100, LinkUp: true, Following: h.ip("cache-1"), HasData: true, Ready: true})
+		}, true},
+		{"whether an instance has data", func(h *harness) {
+			h.setReport(instanceReport{Name: "cache-2", Role: reportReplica, Target: "cache-0", Offset: 100, LinkUp: true, Following: h.ip("cache-0"), Ready: true})
+		}, true},
+		{"who holds the Lease", func(h *harness) {
+			h.setReport(instanceReport{Name: "cache-0", Role: reportPrimary, Target: "cache-0", Offset: 100, HasData: true, Ready: true, SyncedReplicas: 2})
+		}, true},
+		{"a manager that is stopping", func(h *harness) {
+			h.setReport(instanceReport{Name: "cache-2", Role: reportReplica, Target: "cache-0", Offset: 100, LinkUp: true, Following: h.ip("cache-0"), HasData: true, Ready: true, Stopping: true})
+		}, true},
+		{"the primary's min-replicas-to-write", func(h *harness) {
+			h.setReport(instanceReport{Name: "cache-0", Role: reportPrimary, HoldsLease: true, Target: "cache-0", Offset: 100, HasData: true, Ready: true, SyncedReplicas: 2, MinReplicasToWrite: new(1)})
+		}, true},
 		{"a manager that stops answering", func(h *harness) { h.silence("cache-2") }, false},
 	}
 	for _, one := range cases {
@@ -146,4 +161,44 @@ func TestAGoneRedisStopsItsPoller(t *testing.T) {
 
 	running.Wait()
 	mustMatch(t, len(h.c.pollers), 0)
+}
+
+// A scale-down that waits for the replicas that stay to reach the
+// offset of the ones it removes reads their offsets, so a poll wakes it
+// when one moves.
+func TestAPollWakesAScaleDownThatWaitsForAnOffset(t *testing.T) {
+	t.Parallel()
+	h := startHarness(t, 3)
+	h.steady("cache-0", 3)
+	h.pass()
+	h.setInstances(2)
+	h.scaledAway("cache-2", 150)
+	h.following("cache-1", "cache-0", 100)
+	h.pass()
+	pollWoke(h)
+
+	h.following("cache-1", "cache-0", 120)
+	h.c.pollers[h.redis().Metadata.UID].poll(t.Context())
+
+	mustMatch(t, pollWoke(h), true)
+}
+
+// A steady Redis takes writes, so its offsets move on every poll, and
+// none of those polls wakes a pass.
+func TestASteadyRedisPollsWakeNothing(t *testing.T) {
+	t.Parallel()
+	h := startHarness(t, 3)
+	h.steady("cache-0", 3)
+	h.setReport(instanceReport{Name: "cache-0", Role: reportPrimary, HoldsLease: true, Target: "cache-0", Offset: 100, HasData: true, Ready: true, SyncedReplicas: 2, MinReplicasToWrite: new(1)})
+	h.pass()
+	p := h.c.pollers[h.redis().Metadata.UID]
+	pollWoke(h)
+
+	for _, offset := range []int64{200, 300, 400} {
+		h.steadyAt("cache-0", 3, offset)
+		h.setReport(instanceReport{Name: "cache-0", Role: reportPrimary, HoldsLease: true, Target: "cache-0", Offset: offset, HasData: true, Ready: true, SyncedReplicas: 2, MinReplicasToWrite: new(1)})
+		p.poll(t.Context())
+	}
+
+	mustMatch(t, pollWoke(h), false)
 }

@@ -95,6 +95,7 @@ func (c *controller) reconcile(ctx context.Context, r *Redis, w *world) error {
 		return err
 	}
 	d.summarize(pods)
+	c.pollers[r.Metadata.UID].wakeOnOffsets(d.waitsOnOffsets(safe))
 	landed, err := c.writeStatus(ctx, r, status)
 	if err != nil {
 		return err

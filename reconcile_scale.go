@@ -70,6 +70,16 @@ func shrinkSafe(r *Redis, holder string, pods map[string]Pod, st *redisState, po
 	return true
 }
 
+// waitsOnOffsets reports whether this pass waits for an offset that the
+// managers report to move: a scale-down that only shrinkSafe holds,
+// which shrinks once the replicas that stay reach the offset of those it
+// removes. A scale-down that waits for a switchover off a removed
+// instance waits on the switchover instead.
+func (d *decision) waitsOnOffsets(shrinkSafe bool) bool {
+	instances := d.r.Spec.instances()
+	return d.settled && !shrinkSafe && d.scale > instances && ordinal(d.holder) < instances
+}
+
 // scaleAsRead is the StatefulSet's scale: the scale its watch read, or
 // the scale this operator last applied when that is smaller, as when
 // the watch has not yet delivered a shrink. Taking the smaller keeps a

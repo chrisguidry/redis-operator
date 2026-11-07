@@ -59,7 +59,10 @@ type instancePoller struct {
 	mutex  sync.Mutex
 	pods   []Pod
 	target string
-	view   pollView
+	// offsets is whether the latest pass waits for an offset to move, so
+	// a poll in which only offsets moved wakes the next one.
+	offsets bool
+	view    pollView
 	// first is closed when the first poll is published.
 	first chan struct{}
 	stop  context.CancelFunc
@@ -80,6 +83,15 @@ func (p *instancePoller) ask(pods []Pod, target string) {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 	p.pods, p.target = pods, target
+}
+
+// wakeOnOffsets sets whether a poll in which only offsets moved wakes
+// the pass. Every write moves the offsets, so a steady Redis would wake
+// a pass on every poll if they always did.
+func (p *instancePoller) wakeOnOffsets(waiting bool) {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	p.offsets = waiting
 }
 
 func (p *instancePoller) snapshot() pollView {
@@ -109,7 +121,7 @@ func (p *instancePoller) run(ctx context.Context, period time.Duration) {
 // changed what a decision reads.
 func (p *instancePoller) poll(ctx context.Context) {
 	p.mutex.Lock()
-	pods, target := p.pods, p.target
+	pods, target, offsets := p.pods, p.target, p.offsets
 	p.mutex.Unlock()
 
 	began := time.Now()
@@ -171,7 +183,7 @@ func (p *instancePoller) poll(ctx context.Context) {
 	case outcome == pollUnanswered && asked > 0:
 		p.c.log.fault(p.subject, topicPoll, fmt.Sprintf("no instance manager answered on status port %d, so a silent primary starts no failover until one does", p.c.statusPort))
 	}
-	if outcome == pollInformative && pollChanged(previous, next, target, p.c.timings.failureThreshold) {
+	if outcome == pollInformative && pollChanged(previous, next, target, offsets, p.c.timings.failureThreshold) {
 		poke(p.c.pollWake)
 	}
 }
@@ -184,20 +196,35 @@ const (
 )
 
 // pollChanged reports whether a poll changed what a decision reads: a
-// manager that answered for the first time or again, a report whose
-// role, link, readiness, or error changed, or a target whose silence
-// reached the failure threshold.
-func pollChanged(previous, next pollView, target string, threshold time.Duration) bool {
+// manager that answered for the first time or again, a report that
+// changed in any field, or a target whose silence reached the failure
+// threshold. An offset that moved counts only when offsets is set.
+func pollChanged(previous, next pollView, target string, offsets bool, threshold time.Duration) bool {
 	for name, report := range next.reports {
 		before, known := previous.reports[name]
 		if !next.lastSeen[name].Equal(next.at) {
 			continue
 		}
-		if !known || !previous.lastSeen[name].Equal(previous.at) || before.Role != report.Role || before.LinkUp != report.LinkUp || before.Ready != report.Ready || before.Error != report.Error {
+		if !known || !previous.lastSeen[name].Equal(previous.at) || reportChanged(before, report, offsets) {
 			return true
 		}
 	}
 	return previous.silence(target) < threshold && next.silence(target) >= threshold
+}
+
+// reportChanged compares two reports field by field, with
+// MinReplicasToWrite by its value, and with Offset only when offsets is
+// set.
+func reportChanged(before, after instanceReport, offsets bool) bool {
+	if !offsets {
+		before.Offset, after.Offset = 0, 0
+	}
+	if (before.MinReplicasToWrite == nil) != (after.MinReplicasToWrite == nil) ||
+		before.MinReplicasToWrite != nil && *before.MinReplicasToWrite != *after.MinReplicasToWrite {
+		return true
+	}
+	before.MinReplicasToWrite, after.MinReplicasToWrite = nil, nil
+	return before != after
 }
 
 // recordInformative records an informative poll at now: each accounted
