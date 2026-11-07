@@ -355,3 +355,23 @@ func TestAHolderPastItsRenewDeadlineHoldsWritesBeforeItReads(t *testing.T) {
 
 	mustMatch(t, <-heldDuringRead, true)
 }
+
+// A holder that restarts has renewed nothing yet, so a renewal that
+// fails leaves it past its renew deadline, and it holds its writes
+// unless its peers agree.
+func TestARestartedHolderWhoseRenewalFailsHoldsItsWrites(t *testing.T) {
+	t.Parallel()
+	api := startFakeKube(t)
+	api.create(redisResource, Redis{
+		APIVersion: apiVersion, Kind: redisKind,
+		Metadata: ObjectMeta{Name: "cache", Namespace: testNamespace},
+		Spec:     RedisSpec{Engine: "redis", Instances: 2, Memory: "64Mi"},
+	})
+	api.refuse("PATCH", leasesResource.path(testNamespace, primaryLeaseName("cache")), 503)
+	m, s := lonelyHolder(t, api)
+
+	m.step(context.Background())
+
+	mustMatch(t, m.lastRenew.IsZero(), true)
+	mustMatch(t, writeWaits(s), true)
+}

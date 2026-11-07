@@ -140,11 +140,12 @@ func due(now, last time.Time, period time.Duration) bool {
 // measures the deadline on the manager's clock and sets it on the wall
 // clock.
 func (m *manager) apiContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	if !m.lease.held() || m.lastRenew.IsZero() {
+	if !m.lease.held() {
 		return context.WithCancel(ctx)
 	}
-	left := m.lastRenew.Add(m.config.renewDeadline).Sub(m.now())
-	if left <= 0 {
+	now := m.now()
+	left := m.lastRenew.Add(m.config.renewDeadline).Sub(now)
+	if m.pastRenewDeadline(now) || left <= 0 {
 		left = m.config.retryPeriod
 	}
 	return context.WithTimeout(ctx, left)

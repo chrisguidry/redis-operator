@@ -36,9 +36,11 @@ func (m *manager) checkIsolationFirst(ctx context.Context) *isolation {
 }
 
 // pastRenewDeadline reports whether the holder has gone the renew
-// deadline without a renewal.
+// deadline without a renewal. A holder that restarted holding the Lease
+// has renewed nothing yet, and a read that failed proves nothing about
+// its Lease, so until a renewal succeeds it is past the deadline.
 func (m *manager) pastRenewDeadline(now time.Time) bool {
-	return now.Sub(m.lastRenew) > m.config.renewDeadline
+	return m.lastRenew.IsZero() || now.Sub(m.lastRenew) > m.config.renewDeadline
 }
 
 // stepAsHolder runs the primary, or hands the role over. api bounds
@@ -59,9 +61,6 @@ func (m *manager) stepAsHolder(ctx, api context.Context, apiErr error, info repl
 			}
 		}
 		now = m.now()
-	}
-	if m.lastRenew.IsZero() {
-		m.lastRenew = now
 	}
 	if m.pastRenewDeadline(now) {
 		if checked != nil {
