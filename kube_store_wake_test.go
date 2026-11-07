@@ -95,6 +95,20 @@ func TestAStoreCanLimitWhichKeysWake(t *testing.T) {
 	mustMatchMap(t, storedVersions(t, store), map[string]string{"shop/gear": "1"})
 }
 
+// A relist that drops an object forgets the status the operator wrote
+// to it, so the status of an object made again under that key wakes a
+// pass like any other writer's.
+func TestARelistForgetsTheStatusWrittenToAnObjectItDropped(t *testing.T) {
+	t.Parallel()
+	store, _ := newTestStore(trimTo[gadget])
+	store.put("shop/gear", gadgetObject("1", "small", "Ready"))
+	store.wroteStatus("shop/gear", json.RawMessage(`{"phase":"Failed"}`))
+	store.replace(nil)
+	store.put("shop/gear", gadgetObject("2", "small", "Ready"))
+
+	mustMatch(t, store.put("shop/gear", gadgetObject("3", "small", "Failed")), true)
+}
+
 // get answers the trimmed copy the store holds, which a write compares
 // its status with.
 func TestGetAnswersTheTrimmedCopy(t *testing.T) {

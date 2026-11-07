@@ -122,6 +122,14 @@ func (s *objectStore) replace(items []json.RawMessage) {
 	s.mutex.Lock()
 	previous := s.rejected
 	s.objects, s.rejected = objects, rejected
+	// The status written to an object the list lacks belongs to an
+	// object that is gone, and one made again under its key must not
+	// have its status taken for the operator's.
+	for key := range s.written {
+		if _, held := objects[key]; !held {
+			delete(s.written, key)
+		}
+	}
 	s.mutex.Unlock()
 	for _, key := range slices.Sorted(maps.Keys(rejected)) {
 		if previous[key] != rejected[key] {
