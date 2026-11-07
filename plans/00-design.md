@@ -210,8 +210,10 @@ thing only as often as a decision needs it:
   own last write and reads again only after a `409` or a `404`; every
   step as the target, so it takes a released Lease at once; and every
   2 seconds otherwise;
-- the pods every 10 seconds, and on every step of a primary that steps
-  down and waits for its pod to lose the primary label. A step that
+- the pods every 10 seconds, when the holder or the target changes, so
+  the address an instance follows or hands over to is current, and on
+  every step of a primary that steps down and waits for its pod to lose
+  the primary label. A step that
   lists no pods takes the label as still there, and a holder that
   cannot renew agrees with its peers only when it asked one for each
   other instance, so an old list never keeps it serving;

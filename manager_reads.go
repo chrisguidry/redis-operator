@@ -11,9 +11,10 @@ package main
 //     that the API server refused as stale or gone. The target reads it
 //     every step, so it takes a released Lease at once. Any other
 //     instance reads it every Lease read period.
-//   - The pods are listed every slow read period, and on every step of a
-//     primary that steps down, which waits for its pod to lose the
-//     primary label. A step that lists no pods leaves labeledPrimary
+//   - The pods are listed every slow read period, when the holder or the
+//     target changes, so the address this instance follows or hands
+//     over to is current, and on every step of a primary that steps
+//     down, which waits for its pod to lose the primary label. A step that lists no pods leaves labeledPrimary
 //     true, so a stale list never lets a primary stop holding writes
 //     early.
 //   - The Backups, and the Secrets of the users and of TLS, are read
@@ -94,10 +95,12 @@ func (m *manager) rereadLeaseAfter(ctx context.Context, now time.Time, err error
 	}
 }
 
-// readPods lists the pods when the list is due, or on every step while
-// this primary steps down.
+// readPods lists the pods when the list is due, when the holder or the
+// target changed since the last list, or on every step while this
+// primary steps down.
 func (m *manager) readPods(ctx context.Context, now time.Time) error {
-	if m.leaving == nil && !due(now, m.podsReadAt, m.config.slowReadPeriod) {
+	moved := m.lease.holder() != m.podsHolder || m.target != m.podsTarget
+	if m.leaving == nil && !moved && !due(now, m.podsReadAt, m.config.slowReadPeriod) {
 		return nil
 	}
 	var pods struct {
@@ -116,6 +119,7 @@ func (m *manager) readPods(ctx context.Context, now time.Time) error {
 		}
 	}
 	m.pods, m.podIPs, m.podsReadAt = pods.Items, ips, now
+	m.podsHolder, m.podsTarget = m.lease.holder(), m.target
 	return nil
 }
 

@@ -150,8 +150,12 @@ type manager struct {
 	podIPs             map[string]string
 	// When the Lease, the pods, the Backups, and the Secrets of the users
 	// and of TLS were last read (manager_reads.go).
-	leaseReadAt   time.Time
-	podsReadAt    time.Time
+	leaseReadAt time.Time
+	podsReadAt  time.Time
+	// podsHolder and podsTarget are the holder and the target when the
+	// pods were last listed.
+	podsHolder    string
+	podsTarget    string
 	backupsReadAt time.Time
 	accessReadAt  time.Time
 	// minApplied is the min-replicas-to-write this server runs, as the

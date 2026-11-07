@@ -44,10 +44,13 @@ func TestThePodsAreListedOnTheSlowClock(t *testing.T) {
 	h.setTarget("cache-0")
 	h.start("cache-0", "")
 	h.waitFor("cache-0 is a ready primary", func() bool { return h.report("cache-0").Ready })
+	// Taking the Lease changes the holder, which lists the pods once.
+	h.waitForRenewals(1)
+	lists := h.api.requestCount("GET", podsResource.path(testNamespace, ""), false)
 
 	h.waitForRenewals(3)
 
-	mustMatch(t, h.api.requestCount("GET", podsResource.path(testNamespace, ""), false), 1)
+	mustMatch(t, h.api.requestCount("GET", podsResource.path(testNamespace, ""), false), lists)
 }
 
 // A holder that the API server refuses as stale reads the Lease again,
@@ -128,4 +131,22 @@ func TestASteadyPrimarySetsMinReplicasToWriteOnce(t *testing.T) {
 	h.waitForRenewals(3)
 
 	mustMatch(t, sets(), before)
+}
+
+// A new target makes every instance list the pods again, so the address
+// a replica follows or a holder hands over to is current.
+func TestANewTargetListsThePodsAgain(t *testing.T) {
+	t.Parallel()
+	h := startManagerHarness(t, "redis", 1)
+	h.slowReadPeriod = time.Hour
+	h.setTarget("cache-0")
+	h.start("cache-0", "")
+	h.waitFor("cache-0 is a ready primary", func() bool { return h.report("cache-0").Ready })
+	lists := h.api.requestCount("GET", podsResource.path(testNamespace, ""), false)
+
+	h.setTarget(targetPending)
+
+	h.waitFor("cache-0 to list the pods", func() bool {
+		return h.api.requestCount("GET", podsResource.path(testNamespace, ""), false) > lists
+	})
 }
