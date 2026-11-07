@@ -209,11 +209,23 @@ func (c *controller) run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	c.readings.setSynced(true)
+	defer c.readings.setSynced(false)
 	var running sync.WaitGroup
 	defer running.Wait()
 	c.polling = &running
 	c.watch(ctx, &running, versions)
-	running.Go(func() { c.events.run(ctx, c.timings.eventRetryWait, c.timings.eventTimeout) })
+	// The recorder outlives the passes, so the Events of the last pass
+	// are sent after it, once every other writer has stopped.
+	writing, stopWriting := context.WithCancel(context.WithoutCancel(ctx))
+	var recording sync.WaitGroup
+	recording.Go(func() { c.events.run(writing, c.timings.eventRetryWait, c.timings.eventTimeout) })
+	defer func() {
+		running.Wait()
+		stopWriting()
+		recording.Wait()
+		c.events.flush(c.timings.eventTimeout)
+	}()
 
 	ticker := time.NewTicker(c.timings.backstop)
 	defer ticker.Stop()

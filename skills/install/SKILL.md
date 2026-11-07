@@ -16,7 +16,13 @@ https://github.com/chrisguidry/redis-operator. The base holds:
   `redis-operator`, and a Role and RoleBinding `redis-operator` in the
   operator's namespace for its leader-election Lease;
 - the Deployment `redis-operator`: two replicas, labeled
-  `app: redis-operator`, of which one leads and the other waits.
+  `app: redis-operator`, of which one leads and the other waits. A
+  required anti-affinity puts them on different nodes, so a cluster of
+  one node runs one and leaves the other Pending. Each replica is Ready
+  unless it leads and has not yet listed what it watches, which
+  `/healthz` on the metrics port answers;
+- the PodDisruptionBudget `redis-operator`, which lets a drain stop one
+  replica at a time.
 
 You need `kubectl` with cluster-admin rights. The install creates
 CRDs and a ClusterRole, and the ClusterRole lets the operator create

@@ -8,6 +8,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -33,6 +34,10 @@ var watchedResources = []string{"redis", "pods", "leases", "nodes", "statefulset
 
 type metrics struct {
 	registry *prometheus.Registry
+	// leading and synced are what /healthz answers from: whether this
+	// replica leads, and whether its watches have all listed.
+	leading atomic.Bool
+	synced  atomic.Bool
 
 	reconcileErrors prometheus.Counter
 	watchRestarts   *prometheus.CounterVec
@@ -164,7 +169,13 @@ func (m *metrics) observePoll(outcome string, took time.Duration) {
 	m.pollDuration.Observe(took.Seconds())
 }
 
+// setSynced records whether the leader's watches have all listed.
+func (m *metrics) setSynced(synced bool) {
+	m.synced.Store(synced)
+}
+
 func (m *metrics) setLeader(leading bool) {
+	m.leading.Store(leading)
 	if leading {
 		m.leader.Set(1)
 	} else {
@@ -180,7 +191,8 @@ func (m *metrics) handler() http.Handler {
 	})
 }
 
-// serve listens on address and serves /metrics until ctx ends. It
+// serve listens on address and serves /metrics and /healthz until ctx
+// ends. It
 // listens before it returns, so a port that is in use is an error for
 // the caller, and it returns the address it listens on.
 func (m *metrics) serve(ctx context.Context, address string) (net.Addr, error) {
@@ -190,6 +202,11 @@ func (m *metrics) serve(ctx context.Context, address string) (net.Addr, error) {
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", m.handler())
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		if m.leading.Load() && !m.synced.Load() {
+			http.Error(w, "this replica leads, and its watches have not all listed", http.StatusServiceUnavailable)
+		}
+	})
 	// A client that connects and sends no headers holds a goroutine
 	// until this timeout ends it.
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
