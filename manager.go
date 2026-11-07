@@ -41,7 +41,7 @@ import (
 const (
 	primaryLeaseDuration = 15 * time.Second
 	primaryRenewDeadline = 10 * time.Second
-	primaryRetryPeriod   = 2 * time.Second
+	primaryRetryPeriod   = 3 * time.Second
 	managerStepPeriod    = time.Second
 	switchoverTimeout    = 10 * time.Second
 	peerTimeout          = time.Second

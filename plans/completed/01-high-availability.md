@@ -116,7 +116,7 @@ two instances share a machine.
 |---|---|---|
 | Lease duration | 15 s | CNPG's and client-go's default |
 | Renew deadline | 10 s | a primary fences itself before its Lease can expire |
-| Renew period | 2 s | |
+| Renew period | 3 s | each renewal is a write to the API server, and the renew deadline still holds three |
 | Operator poll of `/status` | 2 s | a watch event also starts a pass |
 | Failure threshold | 6 s | how long the target's manager may miss informative polls before a failover starts, counted from the first one it missed; a poll is informative when the operator's context was live and at least one manager answered it |
 | Leaderless threshold | 21 s | the Lease has had no holder for this long after a primary held it, which is longer than a lease duration because a new target waits out the old Lease |
