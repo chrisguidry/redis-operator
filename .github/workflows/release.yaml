@@ -45,7 +45,7 @@ jobs:
     steps:
       # git describe needs the tags, so the checkout fetches the whole
       # history.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -90,30 +90,13 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      - uses: docker/login-action@v4
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      # The image builds here and pushes nothing yet, so a failed build
-      # leaves no partial release behind. The :buildcache tag lets a
-      # tag's release of an already-built commit rebuild nothing.
-      - name: Build the operator
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: Dockerfile
-          load: true
-          build-args: |
-            VERSION=${{ env.VERSION }}
-          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
-          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max
-          tags: |
-            ${{ env.IMAGE }}:${{ env.VERSION }}
-            ${{ env.IMAGE }}:latest
 
       # No image ships from a red gate. ci.yaml runs beside this
       # workflow on a push to main, and this step waits for it, the
@@ -150,16 +133,27 @@ jobs:
           echo "the ci run for $commit did not finish within 35 minutes" >&2
           exit 1
 
-      # :latest is the newest release. A development build pushes its
-      # own tag only.
-      - name: Push the image
+      # The build and the push are one command, so the image is pushed
+      # with the provenance and SBOM that buildx attaches to a push, and
+      # the gate above has already passed. SOURCE_DATE_EPOCH makes the
+      # image config's creation time the commit's, not the runner's
+      # clock. docker-bake.hcl holds the platforms, tags, cache, and
+      # OCI keys, so the same file builds on a workstation. :latest is
+      # the newest release, so a development build pushes its own tag
+      # only. The :buildcache tag lets a tag's release of an
+      # already-built commit rebuild nothing.
+      - name: Build and push the operator
         run: |
-          docker push "$IMAGE:$VERSION"
-          if [ "$RELEASE" = true ]; then
-            docker push "$IMAGE:latest"
-          fi
+          export SOURCE="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          export REVISION
+          REVISION=$(git rev-parse "${GITHUB_SHA}^{commit}")
+          export CREATED SOURCE_DATE_EPOCH
+          CREATED=$(git log -1 --format=%cI "$REVISION")
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct "$REVISION")
+          export LATEST=$RELEASE
+          docker buildx bake --push
 
-      - uses: fluxcd/flux2/action@v2.10.0
+      - uses: fluxcd/flux2/action@3fa784edd773d56630bb9f62645e08f70c2cff0a # v2.10.0
         with:
           version: 2.9.6
 
@@ -179,10 +173,26 @@ jobs:
               echo "deploy/kustomization.yaml has no 'newTag: latest' line for the operator's image to set" >&2
               exit 1
             }
+            commit=$(git rev-parse "${GITHUB_SHA}^{commit}")
+            # The image's OCI keys come from docker-bake.hcl, so the
+            # artifact carries the same url, licenses, vendor,
+            # documentation, and created. flux sets source and revision
+            # from its own flags, and its revision is the version with
+            # the commit, which an OCIRepository reports. The title and
+            # description name the artifact, not the image.
+            export CREATED
+            CREATED=$(git log -1 --format=%cI "$commit")
+            mapfile -t annotations < <(docker buildx bake --print "redis-operator" | jq -r '
+              .target[].labels
+              | del(.["org.opencontainers.image.source"], .["org.opencontainers.image.revision"])
+              | .["org.opencontainers.image.title"] = "redis-operator-deploy"
+              | .["org.opencontainers.image.description"] = "Manifests that deploy redis-operator, with its image set to the same version."
+              | to_entries[] | "--annotations=\(.key)=\(.value)"')
             flux push artifact "oci://$DEPLOY:$VERSION" \
               --path "$dir" \
               --source "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
-              --revision "$VERSION@sha1:$(git rev-parse "${GITHUB_SHA}^{commit}")"
+              --revision "$VERSION@sha1:$commit" \
+              "${annotations[@]}"
           fi
           if [ "$RELEASE" = true ]; then
             flux tag artifact "oci://$DEPLOY:$VERSION" --tag latest

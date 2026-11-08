@@ -113,10 +113,14 @@ three-digit serial within the day, starting at `001`. Run
 `git tag -l "$(date +%Y.%m.%d)-*"` and take the next number. A tag is
 the bare version, lightweight, not annotated.
 
-A pushed tag is a release. `release.yaml` builds the image beside the
-`ci.yaml` run of the same commit, waits for that run to pass, and pushes
-`ghcr.io/chrisguidry/redis-operator` under the version and under
-`:latest`.
+A pushed tag is a release. `release.yaml` waits for the `ci.yaml` run
+of the same commit to pass, then runs `docker buildx bake --push`, which
+builds and pushes `ghcr.io/chrisguidry/redis-operator` under the version and
+under `:latest`, with provenance and an SBOM. `docker-bake.hcl` holds the
+platforms, the tags, and the OCI labels and annotations of the image, so
+`docker buildx bake --load` on a workstation builds the same image. A
+change to a label or an annotation goes in that file, not in the
+Dockerfile.
 
 A push to `main` is a development build, versioned from the most recent
 release tag plus a suffix: `2026.09.27-001-dev-003-abcdef01` is three
